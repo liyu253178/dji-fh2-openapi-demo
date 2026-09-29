@@ -1,9 +1,9 @@
 {
-  "name": "dji-fh2-server",
+  "name": "duav-server",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "大疆司空2 OpenAPI 代理服务：鉴权转发、日志采集、航线对象存储上传",
+  "description": "DUAV 后端 BFF：大疆司空 2 OpenAPI 鉴权转发、成果资产、工单闭环",
   "main": "src/index.js",
   "scripts": {
     "dev": "node src/index.js",
