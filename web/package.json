@@ -12,7 +12,8 @@
     "verify:nav": "node scripts/verify-nav-group.mjs",
     "verify:sync": "node scripts/verify-sync-dialog.mjs",
     "verify:address": "node scripts/verify-patch-address.mjs",
-    "verify:sync-control": "node scripts/verify-sync-control.mjs"
+    "verify:sync-control": "node scripts/verify-sync-control.mjs",
+    "verify:pano": "node scripts/verify-pano-viewer.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

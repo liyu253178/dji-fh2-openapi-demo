@@ -19,8 +19,8 @@
     />
 
     <template v-else>
-      <!-- 变换层：缩放 + 平移 -->
-      <div class="stage" :style="stageStyle">
+      <!-- 变换层：缩放 + 平移（全景模式隐藏） -->
+      <div v-show="!panoActive" class="stage" :style="stageStyle">
         <img
           ref="imgRef"
           :src="url"
@@ -42,6 +42,20 @@
         />
       </div>
 
+      <!-- 全景球面查看（宽高比 ≥ 1.9 的等距柱状投影图自动启用） -->
+      <PanoViewer v-if="panoActive" :url="url" />
+
+      <button
+        v-if="isPano"
+        class="mode-toggle"
+        :class="{ ghost: panoActive }"
+        title="全景模式不支持框选标注，标注请切回平面"
+        @click="panoMode = !panoMode"
+        @mousedown.stop
+      >
+        {{ panoMode ? '平面模式' : '全景模式' }}
+      </button>
+
       <div v-if="pair" class="pair-tag">配对：{{ pair }}</div>
     </template>
 
@@ -56,6 +70,7 @@
  *   左键拖拽 = 框选 · 空格 或 中键 = 平移 · 滚轮 = 缩放 · 双击 = 适应/原始
  */
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
+import PanoViewer from './PanoViewer.vue';
 
 const props = defineProps({
   url: { type: String, default: '' },
@@ -91,7 +106,14 @@ const drawing = ref(false);
 const start = reactive({ x: 0, y: 0 });
 const rect = reactive({ x: 0, y: 0, w: 0, h: 0 });
 const spaceDown = ref(false);
-const hint = ref('左键拖拽框选 · 空格/中键平移 · 滚轮缩放 · 双击还原');
+const isPano = ref(false); // 宽高比 ≥ 1.9 视为等距柱状全景图
+const panoMode = ref(true); // 全景图默认进沉浸模式，可切回平面标注
+const panoActive = computed(() => isPano.value && panoMode.value);
+const hint = computed(() =>
+  panoActive.value
+    ? '拖拽转动视角 · 滚轮缩放视野 · 右上角「平面模式」切回标注'
+    : '左键拖拽框选 · 空格/中键平移 · 滚轮缩放 · 双击还原'
+);
 
 const MIN = 0.5;
 const MAX = 8;
@@ -106,6 +128,9 @@ function onImgLoad() {
   if (imgRef.value) {
     natural.w = imgRef.value.naturalWidth;
     natural.h = imgRef.value.naturalHeight;
+    // 等距柱状全景图典型为 2:1；阈值放宽到 1.9 兼容 1.5:1 的裁切款
+    isPano.value = natural.h > 0 && natural.w / natural.h >= 1.9;
+    if (!isPano.value) panoMode.value = true; // 非全景图复位，避免下次残留
   }
   fit();
 }
@@ -129,6 +154,7 @@ function fit() {
 }
 
 function onWheel(e) {
+  if (panoActive.value) return; // 全景模式滚轮归 PanoViewer（缩放视野）
   const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
   const ns = Math.min(MAX, Math.max(MIN, scale.value * factor));
   // 以鼠标位置为锚点缩放
@@ -144,6 +170,7 @@ function onWheel(e) {
 
 let panning = null;
 function onDown(e) {
+  if (panoActive.value) return; // 全景模式：事件交给 PanoViewer，不框选
   if (e.button === 1 || spaceDown.value) {
     // 中键或按住空格 = 平移
     panning = { x: e.clientX - offset.value.x, y: e.clientY - offset.value.y };
@@ -271,6 +298,25 @@ defineExpose({ fit, natural });
   font-size: var(--fs-xs);
   color: var(--c-text-0);
   background: rgba(0, 0, 0, 0.6);
+}
+.mode-toggle {
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-2);
+  z-index: 6;
+  padding: 4px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+.mode-toggle:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+.mode-toggle.ghost {
+  background: rgba(0, 0, 0, 0.35);
 }
 .hint {
   position: absolute;
