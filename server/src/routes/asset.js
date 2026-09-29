@@ -9,7 +9,7 @@ import path from 'node:path';
 import { toAbsolute, ASSET_DIR, THUMB_DIR, MAIL_IMAGE_DIR } from '../db/config.js';
 import { run } from '../db/index.js';
 import { assetRepo, syncRepo } from '../db/repositories/index.js';
-import { syncAssets, syncStatus } from '../modules/asset/syncService.js';
+import { syncAssets, syncStatus, toEpoch } from '../modules/asset/syncService.js';
 import { removeLocal } from '../modules/asset/downloader.js';
 import { log } from '../logger.js';
 
@@ -96,12 +96,25 @@ router.post('/sync', (req, res) => {
   if (syncStatus().running) {
     return res.status(409).json({ code: 40901, message: '同步正在进行中，请勿重复触发' });
   }
+  // 时间格式先做一次同步校验，非法直接 400，
+  // 否则会带着 NaN 去问司空，表现为「同步成功但 0 个架次」的静默失败
+  let beginTs;
+  let endTs;
+  try {
+    beginTs = toEpoch(beginAt, 'beginAt');
+    endTs = toEpoch(endAt, 'endAt');
+  } catch (e) {
+    return res.status(400).json({ code: 40002, message: e.message });
+  }
+  if (beginTs >= endTs) {
+    return res.status(400).json({ code: 40002, message: 'beginAt 必须早于 endAt' });
+  }
   // 后台执行，不阻塞响应
   syncAssets({
     projectUuid,
     dockSn,
-    beginAt: Number(beginAt),
-    endAt: Number(endAt),
+    beginAt: beginTs,
+    endAt: endTs,
     downloadImages: downloadImages !== false,
     limitTasks: Number(limitTasks) || 0,
   })

@@ -236,9 +236,45 @@ async function processOne(mediaItem, ctx) {
  * @param {number} [opts.limitTasks] 限制架次数（调试用）
  * @param {(p:object)=>void} [opts.onProgress]
  */
+/**
+ * 把入参时间统一成「秒级 Unix 时间戳」
+ *
+ * ⚠️ 实测坑：司空 /flight-task/list 的 begin_at / end_at 必须是秒级时间戳。
+ *    若直接对 "2026-08-30 08:41:11" 这类字符串做 Number() 会得到 NaN，
+ *    而司空对 NaN 不报错、只返回 code=0 + 空 list —— 表现为「同步成功但 0 个架次」，
+ *    极易被误判成"这段时间没飞过"。这里同时接受三种输入并显式报错。
+ *
+ * @param {number|string} v 秒级时间戳 / 毫秒级时间戳 / "YYYY-MM-DD HH:mm:ss" / "YYYY-MM-DD" / ISO 串
+ * @param {'begin'|'end'} which 用于错误提示
+ * @returns {number} 秒级时间戳
+ */
+export function toEpoch(v, which = 'time') {
+  if (v === undefined || v === null || v === '') {
+    throw new Error(`${which} 不能为空`);
+  }
+  // 纯数字：区分秒级与毫秒级（毫秒级 13 位）
+  if (typeof v === 'number' || /^\d+$/.test(String(v).trim())) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) throw new Error(`${which} 不是合法时间戳：${v}`);
+    return n > 1e11 ? Math.floor(n / 1000) : Math.floor(n);
+  }
+  const s = String(v).trim();
+  // 把 "YYYY-MM-DD HH:mm:ss" 转成 ISO（Safari/Node 对空格分隔的解析不一致）
+  const iso = s.includes('T') ? s : s.replace(' ', 'T') + (s.length === 10 ? 'T00:00:00' : '');
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) throw new Error(`${which} 不是合法时间：${v}（支持秒级时间戳或 YYYY-MM-DD HH:mm:ss）`);
+  return Math.floor(ms / 1000);
+}
+
 export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, downloadImages = true, limitTasks = 0, onProgress } = {}) {
   if (running) {
     return { ok: false, message: '同步正在进行中，请勿重复触发' };
+  }
+  // 时间统一成秒级时间戳（见 toEpoch 说明：不转会静默同步 0 个架次）
+  const beginTs = toEpoch(beginAt, 'beginAt');
+  const endTs = toEpoch(endAt, 'endAt');
+  if (beginTs >= endTs) {
+    return { ok: false, message: `beginAt 必须早于 endAt（${beginTs} >= ${endTs}）` };
   }
   running = true;
   current = {
@@ -268,7 +304,7 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
 
   try {
     // 1. 任务清单
-    const tasks = await fetchTasks({ projectUuid, dockSn, beginAt, endAt });
+    const tasks = await fetchTasks({ projectUuid, dockSn, beginAt: beginTs, endAt: endTs });
     const list = limitTasks > 0 ? tasks.slice(0, limitTasks) : tasks;
     summary.tasks = list.length;
     current.totalTasks = list.length;
