@@ -80,7 +80,9 @@ const clicked = await p.evaluate(() => {
 await p.waitForTimeout(600);
 ok('可点击父项触发折叠', clicked);
 
-const routes = [['/assets', '巡检成果'], ['/review', '审核'], ['/tickets', '工单']];
+// ⚠️ 「影像审核」队列页（/review）已删除：入口统一到巡检成果的「审核影像」，
+//    /review 只作深链接兼容重定向 → /assets，所以这里断言「重定向而非 404」。
+const routes = [['/assets', '巡检成果'], ['/tickets', '工单'], ['/stats', '台账']];
 for (const r of routes) {
   await p.goto(BASE + r[0], { waitUntil: 'networkidle', timeout: 30000 });
   await p.waitForTimeout(1200);
@@ -91,6 +93,26 @@ for (const r of routes) {
   const norm = st.url.replace(/\/+$/, '') || '/';
   ok(r[0] + ' 可直达且内容渲染', norm === r[0] && st.body.length > 20, st.url + ' | ' + st.body.slice(0, 40));
 }
+
+await p.goto(BASE + '/review', { waitUntil: 'networkidle', timeout: 30000 });
+await p.waitForTimeout(1200);
+const legacy = await p.evaluate(() => ({
+  url: location.pathname,
+  body: document.body.innerText.slice(0, 200),
+}));
+ok(
+  '/review 深链接重定向到巡检成果（不 404）',
+  (legacy.url.replace(/\/+$/, '') || '/') === '/assets' && legacy.body.length > 20,
+  legacy.url
+);
+
+// 「影像审核」不再作为独立菜单出现（入口已并入巡检成果）
+const navTexts = await p.evaluate(() => {
+  const items = Array.from(document.querySelectorAll('.nav-item, .nav-group, aside a, .side-nav a'));
+  return items.map((e) => (e.innerText || '').trim()).join('|');
+});
+ok('侧边栏已无「影像审核」菜单', navTexts.indexOf('影像审核') < 0, navTexts.slice(0, 120));
+ok('侧边栏仍有「巡检成果」入口', navTexts.indexOf('巡检成果') >= 0, navTexts.slice(0, 120));
 
 const api = await p.evaluate(async (base) => {
   try {

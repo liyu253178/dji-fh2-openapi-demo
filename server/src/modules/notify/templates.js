@@ -159,7 +159,7 @@ export function renderDispatch(ctx, opts = {}) {
     <p class="sec-t">二、线索描述</p>
     <div class="box kv">
       <b>线索类型：</b><span class="tag">${esc(ctx.issue_type_name)}</span><br>
-      <b>涉及范围：</b>${esc(ctx.area || '未估算')}<br>
+      <!-- 涉及范围已移除：航拍估算面积精度不可靠，派发邮件里出现会误导责任单位 -->
       <b>当前地类：</b>${esc(ctx.land_type)}${ctx.is_permanent_farmland === '是' ? '（涉及永久基本农田）' : ''}<br>
       ${ctx.planning_use ? `<b>规划用途：</b>${esc(ctx.planning_use)}<br>` : ''}
       ${ctx.approval_no ? `<b>审批手续号：</b>${esc(ctx.approval_no)}<br>` : ''}

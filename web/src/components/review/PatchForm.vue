@@ -49,13 +49,12 @@
         <p v-if="!hasCoord" class="hint err">影像与框选都没有 GPS 坐标，请手动填写</p>
       </el-form-item>
 
-      <el-form-item label="问题范围">
-        <div class="range-row">
-          <span v-if="areaText" class="area">已框选 ▭ {{ areaText }}</span>
-          <span v-else class="area muted">尚未框选</span>
-          <el-button size="small" @click="$emit('redraw')">重新框选</el-button>
-        </div>
-      </el-form-item>
+      <!--
+        原来这里有「问题范围 ≈ 1822 ㎡」的面积估算与「重新框选」按钮，已按需求删除：
+        无人机照片的 GSD/相对高度本来就不准，估算面积会误导，删掉显示与其计算。
+        框选本身仍保留（用于确定图斑位置与关联影像），只是不再换算成面积展示。
+        需要重画时关掉表单、在图上重新拖拽即可。
+      -->
 
       <el-divider content-position="left">位置描述</el-divider>
 
@@ -152,14 +151,14 @@ const props = defineProps({
   taskUuid: { type: String, default: '' },
   projectUuid: { type: String, default: '' },
   flightLineId: { type: String, default: '' },
-  /** 框选结果：{ geometry, areaM2, lat, lon } */
+  /** 框选结果：{ geometry, lat, lon }（不再含面积——航拍估算面积不准，已停用） */
   draw: { type: Object, default: null },
   initialImageIds: { type: Array, default: () => [] },
   primaryImageId: { type: Number, default: 0 },
   /** 主图 GPS 兜底：未框选时（draw 为 null）用它做地址匹配与入库坐标 */
   imageCoord: { type: Object, default: null },
 });
-const emit = defineEmits(['update:visible', 'saved', 'redraw']);
+const emit = defineEmits(['update:visible', 'saved']);
 
 const formRef = ref(null);
 const saving = ref(false);
@@ -217,13 +216,6 @@ const hasCoord = computed(() => Number.isFinite(Number(form.latStr)) && Number.i
 const sourceText = computed(
   () => ({ auto: '按影像坐标自动匹配', manual: '人工填写', nearby: '邻近图斑复用', coords: '未匹配' })[form.addressSource] || '未匹配'
 );
-const areaText = computed(() => {
-  const a = props.draw?.areaM2;
-  if (!a) return '';
-  if (a < 10000) return `${Math.round(a)} ㎡`;
-  return `${(a / 666.6667).toFixed(1)} 亩`;
-});
-
 const rules = computed(() => {
   const t = typeInfo.value;
   return {
@@ -428,15 +420,6 @@ async function submit(withTicket) {
 .addr-row :deep(.el-input) {
   flex: 1;
   min-width: 0;
-}
-.area {
-  flex: 1;
-  font-size: var(--fs-md);
-  color: var(--c-brand);
-}
-.area.muted {
-  color: var(--c-text-2);
-  font-size: var(--fs-sm);
 }
 .imgs {
   display: flex;

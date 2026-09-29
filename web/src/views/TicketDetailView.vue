@@ -32,9 +32,7 @@
               Leaflet · zoomControl: false（缩放控件禁用，用自定义大按钮）
             </p>
           </div>
-          <p v-if="patch?.areaM2" class="area">
-            覆盖约 {{ Math.round(patch.areaM2) }} ㎡ · {{ patch.gpsStatus || '未知' }} Fix
-          </p>
+          <!-- 面积已不再展示：无人机航拍 GSD/相对高度误差大，估算面积会误导 -->
         </div>
 
         <div class="blk">
