@@ -302,6 +302,17 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
     aborted: false,
   };
 
+  /**
+   * 把 summary 的实时计数同步到进度对象
+   * ⚠️ 实测缺陷：current.downloaded/skipped/failed 只在初始化时置 0，之后从未累加，
+   *    前端同步弹窗的「已下载 / 跳过 / 失败」永远显示 0。这里统一回写。
+   */
+  const syncCounters = () => {
+    current.downloaded = summary.created;
+    current.skipped = summary.skipped;
+    current.failed = summary.failed;
+  };
+
   try {
     // 1. 任务清单
     const tasks = await fetchTasks({ projectUuid, dockSn, beginAt: beginTs, endAt: endTs });
@@ -338,6 +349,7 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
         if (error) {
           syncRepo.markTaskSync(t.uuid, { status: 'failed', error });
           summary.failed++;
+          syncCounters();
           summary.errors.push({ task: t.name || t.uuid, error });
           log.error('资产同步', `媒体清单拉取失败 ${t.name}: ${error}`);
         } else if (noMedia) {
@@ -352,6 +364,7 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
             if (!downloadImages && fileTypeOf(m) === 'image') {
               // 只同步元数据模式：仍解析清单，但不下载
               summary.skipped++;
+              syncCounters();
               continue;
             }
             try {
@@ -364,10 +377,14 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
                 summary.failed++;
                 summary.errors.push({ image: m.name, error: r.error });
               }
+              syncCounters();
+              pushProgress();
             } catch (e) {
               if (e instanceof DiskFullError) throw e; // 磁盘不足需中止整批
               summary.failed++;
               summary.errors.push({ image: m.name, error: e.message });
+              syncCounters();
+              pushProgress();
               log.error('资产同步', `处理影像失败 ${m.name}: ${e.message}`);
             }
           }
@@ -387,11 +404,13 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
       } catch (e) {
         if (e instanceof DiskFullError) throw e;
         summary.failed++;
+        syncCounters();
         summary.errors.push({ task: t.name || t.uuid, error: e.message });
         log.error('资产同步', `处理架次失败 ${t.name}: ${e.message}`);
       }
 
       current.processedTasks++;
+      syncCounters();
       pushProgress();
     }
   } catch (e) {
