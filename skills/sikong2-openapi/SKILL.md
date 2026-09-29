@@ -146,6 +146,8 @@ const glb = buf.subarray(start);            // 注意 buf 若来自 slice()，by
 const pixels = (radius * viewportHeight) / (dist * 2 * Math.tan(fov / 2)); // 阈值 ~220px 则细分
 ```
 - 配套上限：`MAX_LOADED=900`、`MAX_PARALLEL=8`；`mustRefine = hasChildren && !node.uri`（避免空洞）。
+- 模型包走的是司空签发的 **OSS 直链**。出现 `CDN 返回 404` 时**先解析 XML 错误体**：`NoSuchKey` = 源文件在对象存储里已没了（司空里记录还在），只能重新生成；`AccessDenied`/`SignatureDoesNotMatch` = 签名问题，**强刷详情重签后重试一次**即可。别把 404 笼统报给用户。
+- 探测直链可用性**不要用 HEAD**（OSS 常返回 403），用 `GET` + `Range: bytes=0-0` 看 200/206，顺便拿到 `content-range` 里的总大小做超限预判。
 - 没有可渲染文件时降级成图片预览。
 
 ## 8. 前端呈现的几个细节

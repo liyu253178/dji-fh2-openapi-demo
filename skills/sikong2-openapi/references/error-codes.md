@@ -25,6 +25,21 @@
 |---|---|---|
 | 219021 | 任务媒体拉取失败 | 该任务是 `task_type === 'others'`（`FlyToTask_*`），**本来就没有航拍照片**，前端应提前屏蔽入口而不是报错 |
 
+## 模型 / 对象存储（走的是司空签发的 OSS 直链）
+
+| code / 现象 | 真因 / 处理 |
+|---|---|
+| `NoSuchKey`（HTTP 404，响应体是 `application/xml`） | **源文件在对象存储里已不存在**，司空 2 里记录还在（size 也还在）。多半是包被清理或当初就没生成成功 → 只能在司空 2 重新生成/重新上传。代码层面重试无用，但**要先排除签名问题再下结论** |
+| `AccessDenied` / `SignatureDoesNotMatch`（403） | 签名链接过期或被改写 → 重新取一次模型详情拿新签名重试（实测签名有效期约 24h，远长于本地详情缓存 5min，所以过期很少见，但重试成本极低） |
+| 用 `HEAD` 探测签名直链返回 403 | 阿里云 OSS 对签名 URL 的 HEAD 经常不给过，**别用 HEAD 判断可用性**，改用 `GET` + `Range: bytes=0-0`，看 200/206 |
+| "下载失败：CDN 返回 404" | 这是把原因吞掉的坏报错。应该解析 XML 里的 `<Code>/<Message>` 再翻译成人话 |
+
+```js
+// 可用性预检：1 字节就知道文件在不在、多大，不用下整包
+const r = await fetch(url, { headers: { Range: 'bytes=0-0' }, redirect: 'follow' });
+const total = Number((r.headers.get('content-range') || '').split('/')[1] || 0);
+```
+
 ## 前端/集成侧现象（不是司空的错）
 
 | 现象 | 真因 |
