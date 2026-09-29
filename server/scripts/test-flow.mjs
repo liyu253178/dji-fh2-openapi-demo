@@ -402,7 +402,7 @@ ok('改写会刷新 address_at', addrPatch.addressAt !== atBefore, `${atBefore} 
 // 未传地址的老数据不能崩（兼容存量）
 const noAddrCreated = review.createPatch({
   projectUuid: PU, issueType: 'ILLEGAL_BUILD', title: '无地址图斑',
-  geometry: rect, areaM2: 458, geometry: rect, areaM2: 458, landType: '耕地', lat: 23.1, lon: 113.5, adminRegion: 'X区', positionDesc: '东至A西至B南至C北至D',
+  geometry: rect, areaM2: 458, landType: '耕地', lat: 23.1, lon: 113.5, adminRegion: 'X区', positionDesc: '东至A西至B南至C北至D',
 });
 ok('不传地址也能创建（兼容存量）', noAddrCreated.ok === true, JSON.stringify(noAddrCreated));
 const noAddr = patchRepo.findById(noAddrCreated.patchId);

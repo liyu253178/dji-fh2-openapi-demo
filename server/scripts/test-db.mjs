@@ -224,27 +224,28 @@ ok('重复建单被拒绝', dup.ok === false, dup.message);
 
 section('11. 缺少必填项时拒绝派发');
 // p2 故意「什么都不填」，逐项补齐验证每道校验都真的生效
+// ⚠️ 位置描述已改选填、估算面积已不作派单门槛（航拍面积不可信），这两道校验已删除
 const p2 = patchRepo.create({ projectUuid: 'proj-test-001', issueType: 'OCCUPY_ROAD', title: '逐步补齐用例', lat: 22.5, lon: 113.9, areaM2: 50 });
 const r2a = ticketRepo.createFromPatch({ patchId: p2.id, recipientId: 1 });
 ok('全空时首先拦行政区', r2a.ok === false && r2a.message.includes('行政区'), r2a.message);
 patchRepo.update(p2.id, { adminRegion: 'XX街道' });
 const r2b = ticketRepo.createFromPatch({ patchId: p2.id, recipientId: 1 });
-ok('补齐行政区后拦位置描述', r2b.ok === false && r2b.message.includes('位置描述'), r2b.message);
+ok('位置描述为空不再拦截，下一步拦影像（无证据不可派单）', r2b.ok === false && r2b.message.includes('影像'), r2b.message);
 patchRepo.update(p2.id, { positionDesc: '东至XX路' });
 const r2c = ticketRepo.createFromPatch({ patchId: p2.id, recipientId: 1 });
 ok('补齐后拦影像（无证据不可派单）', r2c.ok === false && r2c.message.includes('影像'), r2c.message);
-// 关联一张影像后才应放行
+// 关联一张影像后才应放行（注意此时 positionDesc 已填，但真正放行不依赖它）
 patchImageRepo.attach(p2.id, [imgIds[0]], imgIds[0]);
 const r3 = ticketRepo.createFromPatch({ patchId: p2.id, recipientId: 1 });
 ok('全部补齐后可建单', r3.ok === true, r3.message);
 const p3 = patchRepo.create({ projectUuid: 'proj-test-001', issueType: 'ILLEGAL_BUILD', title: '无影像', lat: 22.5, lon: 113.9, areaM2: 50, adminRegion: 'X', positionDesc: 'Y' });
 const r4 = ticketRepo.createFromPatch({ patchId: p3.id, recipientId: 1 });
 ok('无关联影像被拒绝（无证据不可派单）', r4.ok === false && r4.message.includes('影像'), r4.message);
-// 必填面积校验（ILLEGAL_BUILD 的 require_area 为真）
+// 面积不再是派单门槛（ILLEGAL_BUILD 的 require_area 只作用于建图斑，不拦派发）
 const p4 = patchRepo.create({ projectUuid: 'proj-test-001', issueType: 'ILLEGAL_BUILD', title: '缺面积', lat: 22.5, lon: 113.9, adminRegion: 'X', positionDesc: 'Y' });
 patchImageRepo.attach(p4.id, [imgIds[0]], imgIds[0]);
 const r5 = ticketRepo.createFromPatch({ patchId: p4.id, recipientId: 1 });
-ok('违法建设缺面积被拒绝', r5.ok === false && r5.message.includes('面积'), r5.message);
+ok('面积缺失不再拦截派单', r5.ok === true, r5.message);
 
 // ---------------------------------------------------------------- 12. 状态机
 section('12. 工单状态机');
@@ -282,10 +283,11 @@ ok('已提交的工单不标逾期', ticketRepo.findById(bad1.id).overdue === 0)
 // ---------------------------------------------------------------- 15. 统计
 section('15. 统计与检索');
 const sum = ticketRepo.summary();
-// 成功建成 2 张：bad1（submitted）与 r3（draft）；p3/p4 因校验未过未建单
-ok('工单总数正确', sum.total === 2, `实际 ${sum.total}`);
+// 成功建成 3 张：bad1（submitted）、r3（draft）与 r5（p4 面积缺失已不再拦截，draft）；
+// p3 因无影像未建单
+ok('工单总数正确', sum.total === 3, `实际 ${sum.total}`);
 ok('已提交 1 张', sum.submitted === 1, `实际 ${sum.submitted}`);
-ok('草稿 1 张', sum.draft === 1, `实际 ${sum.draft}`);
+ok('草稿 2 张', sum.draft === 2, `实际 ${sum.draft}`);
 ok('逾期数正确', sum.overdue === 1, `实际 ${sum.overdue}`);
 const tl = ticketRepo.list({ status: 'submitted' });
 ok('按状态筛选', tl.total === 1);
@@ -334,7 +336,7 @@ const h = DB.health();
 ok('完整性检查通过', h.ok === true, h.integrity);
 ok('WAL 模式生效', h.journalMode === 'wal', h.journalMode);
 const counts = DB.tableCounts();
-ok('各表可计数', counts.ticket === 2, JSON.stringify(counts));
+ok('各表可计数', counts.ticket === 3, JSON.stringify(counts));
 // ---------------------------------------------------------------- 汇总
 console.log(`\n${'═'.repeat(60)}`);
 console.log(`测试结果：${pass} 通过 / ${fail} 失败`);
