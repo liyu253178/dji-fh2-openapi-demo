@@ -18,6 +18,10 @@
 | 设备管理  | 物模型实时状态、HMS 异常、控制权、相机/镜头/清晰度控制、实时指令、设备位置地图                                                             |
 | 司空管理  | **OpenAPI TK 多组织切换**、接入点切换（公有云国内/海外/私有云自定义）、项目选择、连通性体检、**API 测试器**（任意接口直连调试）、实时日志输出                    |
 
+## 配套 Skill：`司空 2_open_api`
+
+本项目联调过程中沉淀的经验已整理成可复用的 Skill，放在 [`skills/sikong2-openapi/`](./skills/sikong2-openapi/)（安装到 `~/.workbuddy/skills/` 即可直接使用）。内容覆盖：鉴权与组织切换的坑、设备/物模型/控制权、图传直播三引擎与计费红线、KMZ 上下行、飞行任务记录、媒体下载、3D Tiles/b3dm 解析与 LOD、脱敏清单；另附 `references/api-cheatsheet.md`（接口速查）与 `references/error-codes.md`（错误码与现象对照）。
+
 ## 快速启动
 
 ```bash
