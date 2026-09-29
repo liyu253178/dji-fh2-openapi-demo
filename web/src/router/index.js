@@ -8,6 +8,10 @@ import { createRouter, createWebHistory } from 'vue-router';
  *  - 事件管理：需外部 AI 推理服务回推事件
  *  - 素材与 GIS 建模：需媒资/建模服务
  *  - 算法管理：需外部算法推理服务
+ *
+ * 一期新增：巡检成果 / 影像审核 / 工单中心 / 台账统计 / 邮件配置 / 问题字典 / 派发对象 / 系统状态
+ * 注意：路由为 createWebHistory（非 hash），配合 server 的 SPA 回退，
+ *      深链接不能带#/，邮件模板已按 /tickets/:id 形式生成。
  */
 const routes = [
   { path: '/', redirect: '/dashboard' },
@@ -17,11 +21,23 @@ const routes = [
   // 「设备管理」原占用 /assets，一期「巡检成果」需要 /assets，故迁至 /devices
   { path: '/devices', name: 'devices', component: () => import('../views/DeviceView.vue'), meta: { title: '设备管理', subtitle: '机场与飞行器', icon: 'Box' } },
   { path: '/models', name: 'models', component: () => import('../views/ModelLibraryView.vue'), meta: { title: '模型库', subtitle: '项目模型预览', icon: 'Collection' } },
+
+  // ---------- 一期新增 ----------
+  { path: '/assets', name: 'assets', component: () => import('../views/AssetLibraryView.vue'), meta: { title: '巡检成果', subtitle: '航拍影像与架次', icon: 'FolderOpened' } },
+  { path: '/review', name: 'review', component: () => import('../views/ReviewQueueView.vue'), meta: { title: '影像审核', subtitle: '人工标注与工单生成', icon: 'View' } },
+  { path: '/review/task/:taskUuid', name: 'review-task', component: () => import('../views/ReviewWorkbenchView.vue'), meta: { title: '审核工作台', hidden: true } },
+  { path: '/tickets', name: 'tickets', component: () => import('../views/TicketListView.vue'), meta: { title: '工单管理', subtitle: '派发与跟踪', icon: 'Tickets' } },
+  { path: '/tickets/:id', name: 'ticket-detail', component: () => import('../views/TicketDetailView.vue'), meta: { title: '工单详情', hidden: true } },
+  { path: '/stats', name: 'stats', component: () => import('../views/StatsView.vue'), meta: { title: '台账统计', subtitle: '按行政区与类型', icon: 'DataAnalysis' } },
   { path: '/admin', name: 'admin', component: () => import('../views/AdminView.vue'), meta: { title: '其他设置', subtitle: '组织 · 接入点 · 日志', icon: 'Setting' } },
+  { path: '/admin/mail', name: 'admin-mail', component: () => import('../views/admin/MailConfigView.vue'), meta: { title: '邮件配置', subtitle: 'SMTP 服务', icon: 'Message' } },
+  { path: '/admin/dict', name: 'admin-dict', component: () => import('../views/admin/IssueTypeView.vue'), meta: { title: '问题字典', subtitle: '问题类型管理', icon: 'Notebook' } },
+  { path: '/admin/recipients', name: 'admin-recipients', component: () => import('../views/admin/RecipientView.vue'), meta: { title: '派发对象', subtitle: '责任单位维护', icon: 'User' } },
+  { path: '/admin/status', name: 'admin-status', component: () => import('../views/admin/SystemStatusView.vue'), meta: { title: '系统状态', subtitle: '同步与告警', icon: 'Monitor' } },
 ];
 
 export const menuItems = routes
-  .filter((r) => r.meta?.title)
+  .filter((r) => r.meta?.title && !r.meta?.hidden)
   .map((r) => ({ path: r.path, title: r.meta.title, icon: r.meta.icon }));
 
 export default createRouter({ history: createWebHistory(), routes });

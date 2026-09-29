@@ -27,6 +27,8 @@ import assetRoutes from './routes/asset.js';
 import reviewRoutes from './routes/review.js';
 import ticketRoutes from './routes/ticket.js';
 import notifyRoutes from './routes/notify.js';
+import dictRoutes from './routes/dict.js';
+import { recipientRoutes } from './routes/dict.js';
 import { startWorker as startMailWorker } from './modules/notify/mailer.js';
 
 const app = express();
@@ -70,6 +72,10 @@ app.use('/api/asset', assetRoutes);
 app.use('/api/review', reviewRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/notify', notifyRoutes);
+app.use('/api/dict', dictRoutes);
+// 派发对象挂在 /api/recipients 下，dict 路由内的路径已是 /recipients，
+// 直接挂 dictRoutes 会变成 /api/recipients/recipients，故单独导出一份根路径路由
+app.use('/api/recipients', recipientRoutes);
 
 /** 领域事件 SSE（设备上下线等） */
 app.get('/api/events/stream', (req, res) => {

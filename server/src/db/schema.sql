@@ -254,11 +254,12 @@ CREATE INDEX IF NOT EXISTS idx_ticket_type    ON ticket(issue_type);
 CREATE INDEX IF NOT EXISTS idx_ticket_region  ON ticket(overdue, status);
 
 -- 状态流转留痕：任何状态变更必须写这里，保证可追溯
+-- to_status 允许为 NULL：备注、认领等「不改变状态」的事件也记在这里
 CREATE TABLE IF NOT EXISTS ticket_log (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_id   INTEGER NOT NULL,
   from_status TEXT,
-  to_status   TEXT NOT NULL,
+  to_status   TEXT,
   operator    TEXT,                            -- local_user | system
   remark      TEXT,
   created_at  TEXT NOT NULL

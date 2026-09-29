@@ -113,14 +113,28 @@ const route = useRoute();
 const router = useRouter();
 const store = useSessionStore();
 
-/** 信息架构：按用户要求精简为 5 个核心模块 */
+/**
+ * 信息架构导航
+ * ⚠️ 这里是**硬编码数组，不派生自 router/index.js**——
+ *    新增页面时必须同时改router/index.js 与本数组，只改一处菜单不会出现。
+ */
 const nav = [
   { path: '/dashboard', title: '首页大屏', icon: 'Monitor', badge: 'online' },
   { path: '/cockpit', title: '虚拟座舱', icon: 'Coordinate' },
   { path: '/wayline', title: '航线管理', icon: 'MapLocation' },
   { path: '/devices', title: '设备管理', icon: 'Box' },
   { path: '/models', title: '模型库', icon: 'Collection' },
+  // ---------- 一期新增 ----------
+  { path: '/assets', title: '巡检成果', icon: 'FolderOpened' },
+  { path: '/review', title: '影像审核', icon: 'View' },
+  { path: '/tickets', title: '工单管理', icon: 'Tickets' },
+  { path: '/stats', title: '台账统计', icon: 'DataAnalysis' },
+  // ---------- 系统（一期新增 4 项紧随「其他设置」）----------
   { path: '/admin', title: '其他设置', icon: 'Setting' },
+  { path: '/admin/mail', title: '邮件配置', icon: 'Message' },
+  { path: '/admin/dict', title: '问题字典', icon: 'Notebook' },
+  { path: '/admin/recipients', title: '派发对象', icon: 'User' },
+  { path: '/admin/status', title: '系统状态', icon: 'Monitor' },
 ];
 
 const pageTitle = computed(() => route.meta?.title || 'DUAV · 无人机巡检监管平台');

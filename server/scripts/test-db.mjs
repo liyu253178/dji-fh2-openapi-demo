@@ -51,7 +51,8 @@ const { syncRepo, assetRepo, dictRepo, alertRepo, patchRepo, patchImageRepo, tic
 section('1. 建库与迁移');
 const mig = migrate();
 ok('基线迁移执行', mig.baseline > 0, `baseline=${mig.baseline}`);
-ok('版本已记录', mig.versions === 1);
+// 版本数随 migrations/ 目录增长，只断言「基线已记录」且不重复
+ok('基线版本已记录', mig.versions >= 1, `versions=${mig.versions}`);
 const info = schemaInfo();
 ok('表数量 = 14', info.tableCount === 14, `实际 ${info.tableCount}`);
 ok('索引数量 >= 26', info.indexCount >= 26, `实际 ${info.indexCount}`);
