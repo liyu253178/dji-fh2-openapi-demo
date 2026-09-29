@@ -9,7 +9,15 @@ import path from 'node:path';
 import { toAbsolute, ASSET_DIR, THUMB_DIR, MAIL_IMAGE_DIR } from '../db/config.js';
 import { run } from '../db/index.js';
 import { assetRepo, syncRepo } from '../db/repositories/index.js';
-import { syncAssets, syncStatus, toEpoch, toIsoText } from '../modules/asset/syncService.js';
+import {
+  syncAssets,
+  syncStatus,
+  toEpoch,
+  toIsoText,
+  pauseSync,
+  resumeSync,
+  stopSync,
+} from '../modules/asset/syncService.js';
 import { removeLocal } from '../modules/asset/downloader.js';
 import { log } from '../logger.js';
 
@@ -149,6 +157,26 @@ router.post('/sync', (req, res) => {
 router.get('/sync/status', (req, res) => {
   res.json({ code: 0, message: '', data: syncStatus() });
 });
+
+/**
+ * 暂停 / 继续 / 终止
+ *
+ * 暂停只是把循环挂在安全点（当前影像下完、下一个架次开始前），running 仍为 true，
+ * 已入库的影像全部保留；继续从断点接着跑；终止则结束本轮，未处理的架次留给下次
+ * （入库按 task+media 去重，不会重复下载）。
+ */
+const control = (fn, okName) => (req, res) => {
+  const r = fn();
+  if (!r.ok) {
+    return res.status(409).json({ code: 40901, message: r.message });
+  }
+  log.ok('资产同步', okName);
+  res.json({ code: 0, message: r.message, data: syncStatus() });
+};
+
+router.post('/sync/pause', control(pauseSync, '已暂停'));
+router.post('/sync/resume', control(resumeSync, '已继续'));
+router.post('/sync/stop', control(stopSync, '已终止'));
 
 /**
  * 某项目下「历史同步出过架次」的机场清单

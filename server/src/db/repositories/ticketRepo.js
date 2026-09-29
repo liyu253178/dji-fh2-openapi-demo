@@ -99,6 +99,10 @@ export const patchRepo = {
       admin_region: data.adminRegion ?? '',
       village: data.village ?? '',
       position_desc: data.positionDesc ?? '',
+      // 具体地址：前端按主图坐标自动匹配后传入；人工改过会带 addressSource='manual'
+      address: data.address ?? '',
+      address_source: data.addressSource ?? (data.address ? 'auto' : null),
+      address_at: data.address ? ts : null,
       land_type: data.landType ?? '',
       is_permanent_farmland: data.isPermanentFarmland ? 1 : 0,
       planning_use: data.planningUse ?? '',
@@ -127,6 +131,8 @@ export const patchRepo = {
       adminRegion: 'admin_region',
       village: 'village',
       positionDesc: 'position_desc',
+      address: 'address',
+      addressSource: 'address_source',
       landType: 'land_type',
       isPermanentFarmland: 'is_permanent_farmland',
       planningUse: 'planning_use',
@@ -146,6 +152,10 @@ export const patchRepo = {
       else if (k === 'overlayResult') payload[col] = data[k] ? JSON.stringify(data[k]) : null;
       else payload[col] = data[k];
     }
+    // 地址一变就刷新时间，方便日后判断"这份地址是哪天匹配/改的"
+    if (payload.address !== undefined || payload.address_source !== undefined) {
+      payload.address_at = now();
+    }
     return patch('patch', id, payload);
   },
 
@@ -160,6 +170,9 @@ export const patchRepo = {
       adminRegion: p.admin_region,
       village: p.village,
       positionDesc: p.position_desc,
+      address: p.address ?? '',
+      addressSource: p.address_source ?? '',
+      addressAt: p.address_at ?? '',
       landType: p.land_type,
       isPermanentFarmland: !!p.is_permanent_farmland,
       planningUse: p.planning_use,

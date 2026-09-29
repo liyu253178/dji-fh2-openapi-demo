@@ -356,6 +356,134 @@ ok('deleteTask 返回删除行数', removedRows === 1, `${removedRows}`);
 ok('deleteTask 后架次不存在', !syncRepo.findTask(dropped));
 ok('deleteTask 连带清除名下影像', assetRepo.listByTask(dropped).length === 0);
 
+// ==========================================================================
+// 16. 图斑「具体地址」：迁移字段 → 落库 → 人工改写
+// ==========================================================================
+section('16. 具体地址字段（迁移 004 + 落库 + 手工改写）');
+
+const patchCols = DB.all('PRAGMA table_info(patch)').map((c) => c.name);
+ok('迁移 004 已加 address 列', patchCols.includes('address'), patchCols.join(','));
+ok('迁移 004 已加 address_source 列', patchCols.includes('address_source'));
+ok('迁移 004 已加 address_at 列', patchCols.includes('address_at'));
+
+const addrCreated = review.createPatch({
+  projectUuid: PU,
+  taskUuid: 'task-w3-001',
+  issueType: 'ILLEGAL_BUILD',
+  title: '带地址的图斑',
+  geometry: rect, areaM2: 458, landType: '耕地',
+  lat: 23.0920827,
+  lon: 113.4944772,
+  adminRegion: '广东省广州市黄埔区穗东街道',
+  positionDesc: '东至庙头路，西至鱼塘，南至职校围墙',
+  address: '广东省广州市黄埔区穗东街道庙头北路广州市黄埔职业技术学校',
+  addressSource: 'auto',
+});
+ok('带地址可创建图斑', addrCreated.ok === true, JSON.stringify(addrCreated));
+const addrPatchId = addrCreated.patchId;
+let addrPatch = patchRepo.findById(addrPatchId);
+ok('地址已落库', addrPatch.address.includes('黄埔职业技术学校'), addrPatch.address);
+ok('来源标记为 auto', addrPatch.addressSource === 'auto', String(addrPatch.addressSource));
+ok('匹配时间已写入', !!addrPatch.addressAt, String(addrPatch.addressAt));
+
+// 人工改写：source 必须跟着变，否则前端会再次用自动结果覆盖掉用户的修改
+const atBefore = addrPatch.addressAt;
+await new Promise((r) => setTimeout(r, 5));
+const upd = review.updatePatch(addrPatchId, {
+  address: '广东省广州市黄埔区穗东街道庙头北路 801 号旁空地',
+  addressSource: 'manual',
+});
+ok('人工改写接口返回成功', upd.ok === true, JSON.stringify(upd));
+addrPatch = patchRepo.findById(addrPatchId);
+ok('人工改写后地址已更新', addrPatch.address.includes('801 号旁空地'), addrPatch.address);
+ok('人工改写后来源变 manual', addrPatch.addressSource === 'manual', String(addrPatch.addressSource));
+ok('改写会刷新 address_at', addrPatch.addressAt !== atBefore, `${atBefore} → ${addrPatch.addressAt}`);
+
+// 未传地址的老数据不能崩（兼容存量）
+const noAddrCreated = review.createPatch({
+  projectUuid: PU, issueType: 'ILLEGAL_BUILD', title: '无地址图斑',
+  geometry: rect, areaM2: 458, geometry: rect, areaM2: 458, landType: '耕地', lat: 23.1, lon: 113.5, adminRegion: 'X区', positionDesc: '东至A西至B南至C北至D',
+});
+ok('不传地址也能创建（兼容存量）', noAddrCreated.ok === true, JSON.stringify(noAddrCreated));
+const noAddr = patchRepo.findById(noAddrCreated.patchId);
+ok('不传地址时为空串不报错', noAddr.address === '', JSON.stringify(noAddr.address));
+ok('不传地址时来源为空', !noAddr.addressSource, String(noAddr.addressSource));
+
+// ==========================================================================
+// 17. 逆地理编码：坐标转换 + 降级链（不依赖网络）
+// ==========================================================================
+section('17. 逆地理编码（WGS84→GCJ02 + 降级不崩）');
+
+const rg = await import('../src/modules/geo/reverseGeo.js');
+
+// 国内坐标必须偏移，且偏移在合理量级（不转换会错到隔壁村）
+const wgs = { lat: 22.543096, lon: 113.951726 };
+const gcj = rg.wgs84ToGcj02(wgs.lat, wgs.lon);
+const offM = rg.distanceM(wgs.lat, wgs.lon, gcj.lat, gcj.lon);
+ok('WGS84 转 GCJ02 有偏移', offM > 50, `${Math.round(offM)}m`);
+ok('偏移量级合理（50m~1500m）', offM > 50 && offM < 1500, `${Math.round(offM)}m`);
+ok('经度纬度均为数字', Number.isFinite(gcj.lat) && Number.isFinite(gcj.lon), JSON.stringify(gcj));
+
+// 境外不偏移（outOfChina 判定）
+const abroad = rg.wgs84ToGcj02(35.6895, 139.6917); // 东京
+ok('境外坐标不做偏移', abroad.lat === 35.6895 && abroad.lon === 139.6917, JSON.stringify(abroad));
+
+// 非法输入返回 null，不能产出 NaN 污染入库
+ok('非法坐标转换返回 null', rg.wgs84ToGcj02('abc', 113) === null);
+
+// 距离计算：北京→上海 约 1067km
+const bjSh = rg.distanceM(39.9042, 116.4074, 31.2304, 121.4737);
+ok('距离计算量级正确（京沪 ~1067km）', bjSh > 1_000_000 && bjSh < 1_150_000, `${Math.round(bjSh / 1000)}km`);
+ok('同点距离为 0', Math.round(rg.distanceM(23, 113, 23, 113)) === 0);
+
+// 无效坐标：明确失败，不返回空地址假装成功
+const bad = await rg.reverseGeocode({ lat: 'x', lon: 113 });
+ok('无效坐标返回 invalid', bad.source === 'invalid' && bad.ok === false, JSON.stringify(bad));
+
+// 无 Key 时的降级：必须给 needKey 与人话提示，绝不能静默返回空串
+const geoCfg = await import('../src/modules/geo/geoConfig.js');
+geoCfg.resetCache();
+const savedKey = process.env.AMAP_KEY;
+delete process.env.AMAP_KEY;
+const origFile = path.join(TEST_DATA_DIR, 'geo.json');
+const hadFile = fs.existsSync(origFile);
+if (hadFile) fs.renameSync(origFile, `${origFile}.bak`);
+const noKey = await rg.reverseGeocode({ lat: 23.0920827, lon: 113.4944772, projectUuid: 'no-such-project' });
+ok('无 Key 时不静默失败（needKey=true）', noKey.needKey === true, JSON.stringify(noKey));
+ok('无 Key 时给出人话提示', !!noKey.message && noKey.message.includes('Key'), String(noKey.message));
+if (hadFile) fs.renameSync(`${origFile}.bak`, origFile);
+if (savedKey) process.env.AMAP_KEY = savedKey;
+geoCfg.resetCache();
+
+// 邻近地址兜底：同项目 500m 内已填过的地址可复用（无 Key 时的降级路径）
+// 先清缓存，否则会命中上一条查询的结果（同坐标 4 位小数共用缓存 key）
+rg.resetCache();
+const near = await rg.reverseGeocode({ lat: 23.09208, lon: 113.49447, projectUuid: PU });
+ok(
+  '无 Key 时复用邻近图斑地址',
+  near.source === 'nearby' && near.address.includes('801 号旁空地'),
+  JSON.stringify(near)
+);
+
+// 跨项目不能复用：另一个项目查同一坐标不应拿到本项目的地址
+rg.resetCache();
+const cross = await rg.reverseGeocode({ lat: 23.09208, lon: 113.49447, projectUuid: 'other-project' });
+ok('跨项目不复用地址', cross.source !== 'nearby' && !cross.address.includes('黄埔'), JSON.stringify(cross));
+
+// ==========================================================================
+// 18. 同步控制：空闲时暂停/继续/终止必须被拒
+// ==========================================================================
+section('18. 同步控制（空闲态拒绝 + 状态含 paused）');
+
+const svc = await import('../src/modules/asset/syncService.js');
+const idle = svc.syncStatus();
+ok('状态含 paused 字段', typeof idle.paused === 'boolean', JSON.stringify(idle));
+ok('空闲时 running=false', idle.running === false);
+ok('空闲时暂停被拒', svc.pauseSync().ok === false);
+ok('空闲时继续被拒', svc.resumeSync().ok === false);
+ok('空闲时终止被拒', svc.stopSync().ok === false);
+ok('拒绝时给出原因', !!svc.pauseSync().message, svc.pauseSync().message);
+
 console.log(`\n${'═'.repeat(58)}`);
 console.log(`测试结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('\n失败用例：'); failures.forEach((f) => console.log(`  - ${f}`)); }

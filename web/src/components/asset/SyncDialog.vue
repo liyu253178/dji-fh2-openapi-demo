@@ -83,13 +83,16 @@
       </div>
     </template>
 
-    <!-- 同步中 -->
+    <!-- 同步中（含暂停态） -->
     <template v-else-if="stage === 'running'">
-      <p class="stage-t">正在同步…请勿关闭窗口</p>
+      <p class="stage-t">
+        <template v-if="st.paused">已暂停 —— 当前这张影像下完就停，可继续或终止</template>
+        <template v-else>正在同步…请勿关闭窗口</template>
+      </p>
       <el-progress
         :percentage="progress"
         :stroke-width="6"
-        :status="progress >= 100 ? 'success' : undefined"
+        :status="st.paused ? 'warning' : progress >= 100 ? 'success' : undefined"
       />
       <ul class="run-list">
         <li>已处理架次<strong>{{ st.processedTasks }}</strong> / {{ st.totalTasks }}</li>
@@ -98,12 +101,14 @@
         <li v-if="st.failed">失败<strong class="err">{{ st.failed }}</strong></li>
         <li v-if="st.currentTask" class="cur">当前：{{ st.currentTask }}</li>
       </ul>
+      <p class="pause-hint">已入库的影像会保留，下次同步自动跳过，不会重复下载。</p>
     </template>
 
     <!-- 完成 -->
     <template v-else>
-      <el-result icon="success" title="同步完成">
+      <el-result :icon="result.stopped ? 'warning' : 'success'" :title="result.stopped ? '同步已终止' : '同步完成'">
         <template #sub-title>
+          <p v-if="result.stopped" class="dim">未处理的架次留给下次，已入库的不会重复下载</p>
           <p>成功处理 <strong>{{ result.processedTasks }}</strong> 个架次，新入库 {{ result.downloaded }} 张</p>
           <p v-if="result.emptyTasks">自动剔除无影像航线 <strong>{{ result.emptyTasks }}</strong> 条</p>
           <p v-if="result.failed">失败 {{ result.failed }} 个，详见同步日志</p>
@@ -121,7 +126,15 @@
           </span>
         </el-tooltip>
       </template>
-      <el-button v-else-if="stage === 'running'" disabled>同步中…</el-button>
+      <!--
+        运行态控制：暂停 / 继续 / 终止。
+        暂停只是把循环挂在安全点（当前影像下完），已入库的保留，下次同步自动跳过。
+      -->
+      <template v-else-if="stage === 'running'">
+        <el-button v-if="!st.paused" :loading="ctrlBusy" @click="control('pause')">暂停</el-button>
+        <el-button v-else type="primary" :loading="ctrlBusy" @click="control('resume')">继续</el-button>
+        <el-button type="danger" plain :loading="ctrlBusy" @click="control('stop')">终止</el-button>
+      </template>
       <el-button v-else type="primary" @click="closeAll">确定</el-button>
     </template>
   </el-dialog>
@@ -162,8 +175,8 @@ const historyDocks = computed(() => {
     tasks: d.tasks,
   }));
 });
-const st = ref({ processedTasks: 0, totalTasks: 0, downloaded: 0, failed: 0, emptyTasks: 0, currentTask: '' });
-const result = ref({ processedTasks: 0, downloaded: 0, failed: 0, emptyTasks: 0 });
+const st = ref({ processedTasks: 0, totalTasks: 0, downloaded: 0, failed: 0, emptyTasks: 0, currentTask: '', paused: false });
+const result = ref({ processedTasks: 0, downloaded: 0, failed: 0, emptyTasks: 0, stopped: false });
 
 const form = reactive({
   projectUuid: '',
@@ -229,6 +242,41 @@ async function onProjectChange() {
   }
 }
 
+/** 暂停 / 继续 / 终止。暂停后 running 仍为 true，弹窗停在 running 态 */
+const ctrlBusy = ref(false);
+const CTRL = {
+  pause: { fn: () => assetApi.pauseSync(), ok: '已暂停，可在当前影像下完后继续' },
+  resume: { fn: () => assetApi.resumeSync(), ok: '已继续' },
+  stop: { fn: () => assetApi.stopSync(), ok: '已终止，已入库的影像保留' },
+};
+async function control(action) {
+  if (ctrlBusy.value) return;
+  ctrlBusy.value = true;
+  try {
+    const r = await CTRL[action].fn();
+    if (!r.ok) {
+      ElMessage.warning(r.message || '操作失败');
+      return;
+    }
+    if (r.data) st.value = { ...st.value, ...r.data };
+    ElMessage.success(CTRL[action].ok);
+    // 终止后直接跳到完成态，让用户看到这轮跑了多少
+    if (action === 'stop') {
+      stopTimer(); // 先停轮询，否则它下一拍就会把「已终止」覆盖成「同步完成」
+      result.value = {
+        processedTasks: st.value.processedTasks,
+        downloaded: st.value.downloaded,
+        failed: st.value.failed,
+        emptyTasks: st.value.emptyTasks,
+        stopped: true,
+      };
+      stage.value = 'done';
+    }
+  } finally {
+    ctrlBusy.value = false;
+  }
+}
+
 /** 清理存量「无任何影像」的空壳架次（同步选项只管新数据，历史脏数据靠这里） */
 const pruning = ref(false);
 async function prune() {
@@ -253,11 +301,49 @@ async function prune() {
 }
 
 let timer = null;
-watch(visible, (v) => {
+
+/** 轮询同步状态：跑到结束为止 */
+function pollStatus() {
+  stopTimer();
+  timer = setInterval(async () => {
+    // 已经进完成态（含用户点「终止」主动结束）就不要再覆盖结果，
+    // 否则轮询会把「已终止」冲成「同步完成」
+    if (stage.value === 'done') {
+      stopTimer();
+      return;
+    }
+    const s = await assetApi.syncStatus();
+    if (s.ok && s.data) st.value = s.data;
+    if (s.data && s.data.running === false) {
+      stopTimer();
+      result.value = {
+        processedTasks: s.data.processedTasks || 0,
+        downloaded: s.data.downloaded || 0,
+        failed: s.data.failed || 0,
+        emptyTasks: s.data.emptyTasks || 0,
+      };
+      stage.value = 'done';
+      emit('done');
+    }
+  }, 1500);
+}
+
+watch(visible, async (v) => {
   if (v) {
     stage.value = 'config';
     form.projectUuid = form.projectUuid || store.projectUuid || '';
     if (form.projectUuid) onProjectChange();
+    /**
+     * ⚠️ 加了「暂停/终止」之后暴露的缺口：同步在后台跑着（或被暂停了）时
+     *    重新打开弹窗，会直接回到配置态 —— 用户既看不到进度也按不到暂停。
+     *    打开时先探一次状态，运行中就直接进运行态接着轮询。
+     */
+    const s = await assetApi.syncStatus().catch(() => null);
+    if (s?.ok && s.data?.running) {
+      st.value = s.data;
+      stage.value = 'running';
+      pollStatus();
+    }
   } else {
     stopTimer();
   }
@@ -291,22 +377,7 @@ async function start() {
     return;
   }
   stage.value = 'running';
-  stopTimer();
-  timer = setInterval(async () => {
-    const s = await assetApi.syncStatus();
-    if (s.ok && s.data) st.value = s.data;
-    if (s.data && s.data.running === false) {
-      stopTimer();
-      result.value = {
-        processedTasks: s.data.processedTasks || 0,
-        downloaded: s.data.downloaded || 0,
-        failed: s.data.failed || 0,
-        emptyTasks: s.data.emptyTasks || 0,
-      };
-      stage.value = 'done';
-      emit('done');
-    }
-  }, 1500);
+  pollStatus();
 }
 
 function closeAll() {
@@ -335,6 +406,12 @@ function closeAll() {
   margin: 0 0 var(--sp-2);
   font-size: var(--fs-md);
   color: var(--c-text-0);
+}
+.pause-hint {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--c-text-2);
+  line-height: 1.6;
 }
 .run-list {
   list-style: none;

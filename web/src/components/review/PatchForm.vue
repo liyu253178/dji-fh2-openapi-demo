@@ -39,7 +39,7 @@
           <el-input v-model="form.lonStr" :disabled="!manualCoord" placeholder="经度" class="mono" />
         </div>
         <el-checkbox v-model="manualCoord" class="mt6">手动微调（默认取影像 GPS）</el-checkbox>
-        <p v-if="!form.latStr" class="hint err">该影像无 GPS 坐标，请手动填写</p>
+        <p v-if="!hasCoord" class="hint err">影像与框选都没有 GPS 坐标，请手动填写</p>
       </el-form-item>
 
       <el-form-item label="问题范围">
@@ -52,8 +52,31 @@
 
       <el-divider content-position="left">位置描述</el-divider>
 
+      <!--
+        具体地址：按影像 GPS 逆地理编码自动带出，可直接改。
+        ⚠️ 改成手填后不再被自动结果覆盖（addrTouched），否则会出现"改完又被冲掉"。
+      -->
+      <el-form-item label="具体地址">
+        <div class="addr-row">
+          <el-input
+            v-model="form.address"
+            :loading="addrLoading"
+            placeholder="按影像坐标自动匹配，也可手填"
+            @input="onAddressInput"
+          />
+          <el-button size="default" :loading="addrLoading" :disabled="!hasCoord" @click="matchAddress(true)">
+            重新匹配
+          </el-button>
+        </div>
+        <p v-if="addrLoading" class="hint">正在按影像坐标匹配地址…</p>
+        <p v-else-if="addrMsg" class="hint" :class="{ err: addrErr }">{{ addrMsg }}</p>
+        <p v-else class="hint">
+          ⓘ 来源：{{ sourceText }}<template v-if="form.addressSource === 'nearby'">（邻近图斑地址，请核对）</template>
+        </p>
+      </el-form-item>
+
       <el-form-item label="行政区" prop="adminRegion">
-        <el-input v-model="form.adminRegion" placeholder="例：深圳市宝安区XX街道" />
+        <el-input v-model="form.adminRegion" placeholder="例：深圳市宝安区XX街道" @input="regionTouched = true" />
       </el-form-item>
       <el-form-item label="村/社区">
         <el-input v-model="form.village" placeholder="例：XX社区" />
@@ -126,12 +149,20 @@ const props = defineProps({
   draw: { type: Object, default: null },
   initialImageIds: { type: Array, default: () => [] },
   primaryImageId: { type: Number, default: 0 },
+  /** 主图 GPS 兜底：未框选时（draw 为 null）用它做地址匹配与入库坐标 */
+  imageCoord: { type: Object, default: null },
 });
 const emit = defineEmits(['update:visible', 'saved', 'redraw']);
 
 const formRef = ref(null);
 const saving = ref(false);
 const manualCoord = ref(false);
+const addrLoading = ref(false);
+const addrMsg = ref('');
+const addrErr = ref(false);
+/** 用户手改过地址/行政区后，自动匹配不再覆盖（避免"改完又被冲掉"） */
+const addrTouched = ref(false);
+const regionTouched = ref(false);
 
 const form = reactive({
   issueType: '',
@@ -139,6 +170,8 @@ const form = reactive({
   description: '',
   latStr: '',
   lonStr: '',
+  address: '',
+  addressSource: '',
   adminRegion: '',
   village: '',
   positionDesc: '',
@@ -151,6 +184,10 @@ const form = reactive({
 });
 
 const typeInfo = computed(() => props.types.find((t) => t.code === form.issueType) || null);
+const hasCoord = computed(() => Number.isFinite(Number(form.latStr)) && Number.isFinite(Number(form.lonStr)) && !!form.latStr && !!form.lonStr);
+const sourceText = computed(
+  () => ({ auto: '按影像坐标自动匹配', manual: '人工填写', nearby: '邻近图斑复用', coords: '未匹配' })[form.addressSource] || '未匹配'
+);
 const areaText = computed(() => {
   const a = props.draw?.areaM2;
   if (!a) return '';
@@ -184,8 +221,63 @@ watch(
     if (!d) return;
     if (d.lat !== undefined) form.latStr = String(d.lat);
     if (d.lon !== undefined) form.lonStr = String(d.lon);
+    // 框选坐标变了就重新匹配（用户手动改过地址则不覆盖）
+    if (props.visible) matchAddress(false);
   }
 );
+
+/**
+ * 按影像坐标匹配具体地址
+ * @param {boolean} force true=用户点「重新匹配」，即使手改过也覆盖
+ */
+async function matchAddress(force = false) {
+  if (!hasCoord.value) {
+    addrMsg.value = '影像与框选都没有 GPS 坐标，请手动填写地址';
+    addrErr.value = true;
+    return;
+  }
+  if (!force && addrTouched.value) return;
+  addrLoading.value = true;
+  addrMsg.value = '';
+  addrErr.value = false;
+  const r = await reviewApi.reverseGeocode({
+    lat: Number(form.latStr),
+    lon: Number(form.lonStr),
+    projectUuid: props.projectUuid || undefined,
+  });
+  addrLoading.value = false;
+  const d = r.ok ? r.data : null;
+  if (!d || !d.ok) {
+    addrMsg.value = (d && d.message) || r.message || '地址匹配失败，请手动填写';
+    addrErr.value = true;
+    return;
+  }
+  if (d.address) {
+    form.address = d.address;
+    form.addressSource = d.source === 'nearby' ? 'nearby' : 'auto';
+    addrTouched.value = false;
+  }
+  // 行政区空着就顺手带上（省/市/区/街道），不覆盖用户已填的内容
+  if (!form.adminRegion) {
+    const region = [d.city, d.district, d.township].filter(Boolean).join('');
+    if (region) {
+      form.adminRegion = region;
+      regionTouched.value = false;
+    }
+  }
+  if (d.needKey) {
+    addrMsg.value = d.message || '未配置高德 Key，无法自动匹配地址，请手动填写';
+    addrErr.value = true;
+    if (!form.address) form.addressSource = 'coords';
+  } else if (d.message) {
+    addrMsg.value = d.message;
+  }
+}
+
+function onAddressInput() {
+  addrTouched.value = true;
+  if (form.address.trim()) form.addressSource = 'manual';
+}
 
 function reset() {
   form.issueType = '';
@@ -193,6 +285,8 @@ function reset() {
   form.description = '';
   form.latStr = '';
   form.lonStr = '';
+  form.address = '';
+  form.addressSource = '';
   form.adminRegion = '';
   form.village = '';
   form.positionDesc = '';
@@ -203,7 +297,19 @@ function reset() {
   form.imageIds = [...props.initialImageIds];
   form.primaryImageId = props.primaryImageId || props.initialImageIds[0] || 0;
   manualCoord.value = false;
+  addrTouched.value = false;
+  regionTouched.value = false;
+  addrMsg.value = '';
+  addrErr.value = false;
+  // 坐标优先级：框选结果 > 主图 GPS（传来的 imageCoord）
+  const c = props.draw || props.imageCoord;
+  if (c && c.lat !== undefined && c.lon !== undefined) {
+    form.latStr = String(c.lat);
+    form.lonStr = String(c.lon);
+  }
   formRef.value?.clearValidate();
+  // 打开即自动带出地址（用户选的是"打开表单自动带出 + 可改 + 可重新匹配"）
+  if (hasCoord.value) matchAddress(false);
 }
 
 function onTypeChange() {
@@ -238,6 +344,8 @@ async function submit(withTicket) {
     adminRegion: form.adminRegion,
     village: form.village,
     positionDesc: form.positionDesc,
+    address: form.address,
+    addressSource: form.addressSource || (form.address ? 'manual' : ''),
     landType: form.landType,
     isPermanentFarmland: form.isPermanentFarmland,
     planningUse: form.planningUse,
@@ -274,6 +382,16 @@ async function submit(withTicket) {
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
+}
+.addr-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  width: 100%;
+}
+.addr-row :deep(.el-input) {
+  flex: 1;
+  min-width: 0;
 }
 .area {
   flex: 1;

@@ -185,6 +185,7 @@
       :project-uuid="projectUuid"
       :flight-line-id="flightLineId"
       :draw="draw"
+      :image-coord="current && current.lat ? { lat: current.lat, lon: current.lon } : null"
       :initial-image-ids="selected.length ? selected : [current.id]"
       :primary-image-id="selected[0] || current.id"
       @saved="onSaved"

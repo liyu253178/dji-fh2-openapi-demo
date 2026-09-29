@@ -57,6 +57,10 @@ const del = (p) => request(p, { method: 'DELETE' });
 export const assetApi = {
   syncStatus: () => get('/api/asset/sync/status'),
   sync: (body) => post('/api/asset/sync', body),
+  // 暂停 / 继续 / 终止：暂停只是把循环挂在安全点，已入库的保留
+  pauseSync: () => post('/api/asset/sync/pause'),
+  resumeSync: () => post('/api/asset/sync/resume'),
+  stopSync: () => post('/api/asset/sync/stop'),
   tasks: (query) => get('/api/asset/tasks', query),
   // 历史同步出过架次的机场（用于同步弹窗下拉：在线设备 ∪ 历史机场）
   knownDocks: (projectUuid) => get('/api/asset/known-docks', { projectUuid }),
@@ -73,6 +77,10 @@ export const assetApi = {
 
 export const reviewApi = {
   queue: (query) => get('/api/review/queue', query),
+  // 影像坐标 → 具体地址（服务端代理高德，前端不接触 Key）
+  reverseGeocode: (query) => get('/api/review/reverse-geocode', query),
+  geoConfig: () => get('/api/review/geo-config'),
+  saveGeoConfig: (key) => put('/api/review/geo-config', { key }),
   patch: (id) => get(`/api/review/patches/${id}`),
   create: (body) => post('/api/review/patches', body),
   update: (id, body) => put(`/api/review/patches/${id}`, body),

@@ -123,6 +123,9 @@ export function createPatch(input) {
     adminRegion: d.adminRegion,
     village: d.village,
     positionDesc: d.positionDesc,
+    // 具体地址：前端按影像坐标逆地理匹配后传入，人工改过会带 source='manual'
+    address: input.address ?? '',
+    addressSource: input.addressSource ?? (input.address ? 'auto' : null),
     landType: d.landType,
     isPermanentFarmland: !!d.isPermanentFarmland,
     planningUse: d.planningUse,
@@ -157,6 +160,9 @@ export function updatePatch(id, input) {
     adminRegion: input.adminRegion ?? existing.adminRegion,
     village: input.village ?? existing.village,
     positionDesc: input.positionDesc ?? existing.positionDesc,
+    // 地址：传了就用新的（含人工改写），没传则保持原样，不能被空串冲掉
+    address: input.address ?? existing.address ?? '',
+    addressSource: input.addressSource ?? existing.addressSource ?? '',
     landType: input.landType ?? existing.landType,
     isPermanentFarmland: input.isPermanentFarmland ?? existing.isPermanentFarmland,
     planningUse: input.planningUse ?? existing.planningUse,

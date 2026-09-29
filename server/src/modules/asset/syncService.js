@@ -22,10 +22,88 @@ import { generateDerivatives } from './thumbnail.js';
 
 /** 同步运行状态（内存态，一期单机够用） */
 let running = false;
-let current = { running: false, processedTasks: 0, totalTasks: 0, downloaded: 0, skipped: 0, failed: 0, currentTask: '' };
+/**
+ * 暂停 / 终止的控制原语。
+ *
+ * 设计：同步主体是一个两层 for 循环（架次 → 影像），没有可中断点。
+ * 这里用「检查点 + Promise 闸门」实现控制，而不是粗暴 kill：
+ *   - checkpoint() 只在安全点（每张影像前、每个架次前）调用，
+ *     暂停时 await 一个永不 resolve 的 Promise，直到 resume 才放行；
+ *   - 终止时 resolve 成 'stop'，由调用方 break 出循环，已入库的数据全部保留
+ *     （下次同步靠 task+media 幂等跳过，不会重复下载）。
+ * 这样「暂停」不会把一张图下到一半，也不会丢已经入过库的成果。
+ */
+let paused = false;
+let stopped = false;
+let gateResolvers = [];
+let stopError = null;
+
+class SyncStopped extends Error {
+  constructor() {
+    super('同步已被终止');
+    this.name = 'SyncStopped';
+  }
+}
+
+/** 放行所有等待中的检查点（resume 传 'go'，stop 传 'stop'） */
+function releaseGate(action) {
+  const rs = gateResolvers;
+  gateResolvers = [];
+  rs.forEach((r) => r(action));
+}
+
+/** 同步检查点：暂停时挂起，终止时抛错跳出循环 */
+async function checkpoint() {
+  if (stopped) throw new SyncStopped();
+  if (!paused) return;
+  const action = await new Promise((resolve) => {
+    gateResolvers.push(resolve);
+  });
+  if (action === 'stop') throw new SyncStopped();
+}
+
+let current = { running: false, paused: false, processedTasks: 0, totalTasks: 0, downloaded: 0, skipped: 0, failed: 0, currentTask: '' };
 
 export function syncStatus() {
   return { ...current };
+}
+
+/**
+ * 暂停 / 继续 / 终止
+ *
+ * ⚠️ 暂停状态下 running 仍为 true（只是被挂起，不是结束），
+ *    所以 /sync 的「同步进行中」判断要把 paused 也算进去，否则能在暂停期间再起一轮。
+ */
+export function pauseSync() {
+  if (!running) return { ok: false, message: '当前没有正在进行的同步' };
+  if (paused) return { ok: false, message: '同步已处于暂停状态' };
+  paused = true;
+  current.paused = true;
+  pushProgress();
+  log.warn('资产同步', '已暂停（在当前架次/影像的安全点停下，点「继续」可接着跑）');
+  return { ok: true, message: '已暂停' };
+}
+
+export function resumeSync() {
+  if (!running) return { ok: false, message: '当前没有正在进行的同步' };
+  if (!paused) return { ok: false, message: '同步未处于暂停状态' };
+  paused = false;
+  current.paused = false;
+  pushProgress();
+  releaseGate('go');
+  log.ok('资产同步', '已继续');
+  return { ok: true, message: '已继续' };
+}
+
+export function stopSync() {
+  if (!running) return { ok: false, message: '当前没有正在进行的同步' };
+  stopped = true;
+  paused = false;
+  current.paused = false;
+  pushProgress();
+  releaseGate('stop');
+  log.warn('资产同步', '已终止（已入库的影像保留，下次同步自动跳过）');
+  return { ok: true, message: '已终止' };
 }
 
 function pushProgress(patch = {}) {
@@ -364,8 +442,12 @@ export async function syncAssets({
     };
   }
   running = true;
+  paused = false;
+  stopped = false;
+  gateResolvers = [];
   current = {
     running: true,
+    paused: false,
     processedTasks: 0,
     totalTasks: 0,
     downloaded: 0,
@@ -397,6 +479,7 @@ export async function syncAssets({
     dockErrors: [],
     errors: [],
     aborted: false,
+    stopped: false,
   };
 
   /**
@@ -434,6 +517,8 @@ export async function syncAssets({
 
     // 2. 逐架次处理
     for (const t of list) {
+      // 检查点：暂停时在这里挂起，终止时在这里跳出（架次级别）
+      await checkpoint();
       const taskDockSn = t._dockSn || dockSn || docks[0];
       current.currentTask = t.name || t.uuid;
       pushProgress();
@@ -497,6 +582,8 @@ export async function syncAssets({
           const dir = await taskDir({ projectUuid, shotDate, taskName: t.name || t.uuid });
 
           for (const m of media) {
+            // 检查点：影像级别。一张图下完才停，绝不把文件写一半
+            await checkpoint();
             if (!downloadImages && fileTypeOf(m) === 'image') {
               // 只同步元数据模式：仍解析清单，但不下载
               summary.skipped++;
@@ -539,7 +626,8 @@ export async function syncAssets({
         }
         summary.tasks++;
       } catch (e) {
-        if (e instanceof DiskFullError) throw e;
+        // 终止不是失败：不能计进 failed，也不能继续跑下一个架次
+        if (e instanceof DiskFullError || e instanceof SyncStopped) throw e;
         summary.failed++;
         syncCounters();
         summary.errors.push({ task: t.name || t.uuid, error: e.message });
@@ -551,7 +639,15 @@ export async function syncAssets({
       pushProgress();
     }
   } catch (e) {
-    if (e instanceof DiskFullError) {
+    if (e instanceof SyncStopped) {
+      // 用户主动终止：已入库的保留，未处理的留给下次（task+media 幂等，不会重复下载）
+      summary.stopped = true;
+      // 注意：这里用 current.totalTasks 而不是 list.length —— list 声明在 try 内，catch 里取不到
+      log.warn(
+        '资产同步',
+        `已终止：处理 ${summary.tasks} 个架次，入库 ${summary.created} 张，未处理 ${Math.max(0, current.totalTasks - current.processedTasks)} 个架次`
+      );
+    } else if (e instanceof DiskFullError) {
       summary.aborted = true;
       summary.ok = false;
       summary.errors.push({ scope: 'disk', error: e.message });
@@ -564,8 +660,13 @@ export async function syncAssets({
       log.error('资产同步', `同步异常: ${e.message}`);
     }
   } finally {
+    // 控制态复位：无论正常结束 / 终止 / 异常，都不能把 paused/stopped 留到下一轮
     running = false;
+    paused = false;
+    stopped = false;
+    releaseGate('stop'); // 兜底放行可能还挂着的检查点，避免协程永久挂起
     current.running = false;
+    current.paused = false;
     current.currentTask = '';
     current.finishedAt = new Date().toISOString();
     pushProgress();
