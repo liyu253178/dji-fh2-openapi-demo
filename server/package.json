@@ -13,7 +13,8 @@
     "test:http": "node scripts/verify-http.mjs",
     "test:asset": "node scripts/verify-asset.mjs",
     "assert:asset": "node scripts/assert-asset.mjs",
-    "db:reset": "node -e \"import('node:fs').then(fs=>{['data/duav.db','data/duav.db-wal','data/duav.db-shm'].forEach(f=>fs.existsSync(f)&&fs.unlinkSync(f));console.log('数据库已重置')})\""
+    "db:reset": "node -e \"import('node:fs').then(fs=>{['data/duav.db','data/duav.db-wal','data/duav.db-shm'].forEach(f=>fs.existsSync(f)&&fs.unlinkSync(f));console.log('数据库已重置')})\"",
+    "test:mail": "node scripts/test-mail.mjs"
   },
   "dependencies": {
     "ali-oss": "^6.21.0",
@@ -22,6 +23,7 @@
     "express": "^4.19.2",
     "fflate": "^0.8.3",
     "multer": "^2.4.0",
+    "nodemailer": "^10.0.12",
     "sharp": "^0.35.5"
   }
 }

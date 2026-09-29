@@ -26,6 +26,8 @@ import modelRoutes from './routes/model.js';
 import assetRoutes from './routes/asset.js';
 import reviewRoutes from './routes/review.js';
 import ticketRoutes from './routes/ticket.js';
+import notifyRoutes from './routes/notify.js';
+import { startWorker as startMailWorker } from './modules/notify/mailer.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
@@ -39,6 +41,13 @@ migrate();
 seed({ withSampleRecipients: process.env.SEED_SAMPLE_RECIPIENTS !== '0' });
 const dict = dictReady();
 log.info('DB', `字典就绪：${dict.issueTypes} 个问题类型、${dict.recipients} 个派发对象`);
+
+// 启动邮件队列 worker（无 SMTP 配置时静默跳过，不影响其他功能）
+if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+  startMailWorker();
+} else {
+  log.warn('BOOT', '未配置 SMTP_USER / SMTP_PASS，邮件派发功能不可用（工单仍可创建与管理）');
+}
 
 // 初始化会话
 store.load();
@@ -60,6 +69,7 @@ app.use('/api/model', modelRoutes);
 app.use('/api/asset', assetRoutes);
 app.use('/api/review', reviewRoutes);
 app.use('/api/tickets', ticketRoutes);
+app.use('/api/notify', notifyRoutes);
 
 /** 领域事件 SSE（设备上下线等） */
 app.get('/api/events/stream', (req, res) => {
