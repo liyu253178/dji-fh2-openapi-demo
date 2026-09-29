@@ -12,7 +12,7 @@
             <path d="M5.9 5.9 9.9 9.9M18.1 5.9 14.1 9.9M5.9 18.1 9.9 14.1M18.1 18.1 14.1 14.1" stroke-linecap="round" />
           </svg>
         </div>
-        <span class="brand-title">无人机管控平台</span>
+        <span class="brand-title">DUAV</span>
       </div>
 
       <div class="topbar-title">
