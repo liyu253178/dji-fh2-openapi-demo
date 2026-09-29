@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>从中秋假期的一个 demo，到一个可演示的无人机管控原型：大疆司空 2 OpenAPI 二次开发实战</title>
+</head>
+<body>
+
+<div style="max-width:680px;margin:0 auto;padding:16px 18px 40px;background:#ffffff;">
+
+<h1 style="font-size:24px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:0 0 18px;">从中秋假期的一个小 demo，到一个可演示的无人机管控原型 —— 大疆司空 2 OpenAPI 二次开发实战笔记</h1>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">最近客户问司空 2 二次开发的问题越来越多：这个能不能接？那个接口怎么用？说实话，有些东西我自己也没亲手做过，光对着开发文档看，还真不好张嘴就给人下结论。🤔</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">所以趁着中秋那几天，我自己把开放文档啃了一遍，看不懂的地方就问 AI，边学边搭积木 —— 先撸个最小 demo（拉设备、看直播、下发航线），跑通了再一块一块往上加，慢慢长成一个<strong style="color:#1677ff;">可演示、可试用的无人机管控原型</strong>：首页大屏、虚拟座舱、航线管理、设备管理、模型库、其他设置，六个一级菜单，单端口跑起来。🚁</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">这篇就当是一次学习笔记的整理，按模块把我<strong style="color:#1677ff;">实际踩过的坑</strong>和<strong style="color:#1677ff;">真实用的接口</strong>摊开讲，顺带说说哪些地方还做得不好。下次再有客户问，我至少能说得有底气一点。</p>
+
+<div style="background:#f0f7ff;border-left:4px solid #1677ff;border-radius:6px;padding:14px 16px;margin:0 0 20px;">
+<p style="font-size:15px;line-height:1.7;color:#333;margin:0;">📌 <strong style="color:#1677ff;">两点说明：</strong><br />① 下文所有接口路径都带完整的 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:13px;">/openapi/v0.1</code> 前缀，可以直接对着文档核；<br />② 文中涉及的<strong style="color:#1677ff;">参数枚举、错误码均为我在当时版本上的实测值</strong>，可能随版本变化，动手前请以官方文档和当前版本为准。</p>
+</div>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">一、认证鉴权：四个 Header，第一个坑在 Token 上</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">司空 2 的 OpenAPI 走 Header 鉴权，请求头就这几样：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">X-User-Token:   用户 Token（我们内部习惯叫 TK，是一串 JWT）
+X-Project-Uuid: 项目 UUID（大部分业务接口必填）
+X-Request-Id:   每次请求生成一个 UUID，排查问题全靠它
+X-Language:     zh</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;"><strong style="color:#1677ff;">密钥格式的坑：</strong>这个 Token 是 JWT，从司空 2 后台复制的时候特别容易复制半截（尤其是换行、空格被吃掉）。我一开始只是把它存起来直接发请求，结果报的错完全看不出是 Token 的问题。后来我在后端加了一步「不校验签名，只解 payload」的解析 —— 我这版的 payload 里有 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">user_id</code>、<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">organization_uuid</code>、<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">project_uuid</code> 等字段（字段名以你手上的文档为准）—— 解不出来就直接告诉用户「Token 不是合法 JWT，请检查是否复制完整」，顺便把组织 UUID 读出来做标识。这一下省了大量无效排查。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">另外两个真实的坑：</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">① <strong style="color:#1677ff;">切换 Token 必须清缓存。</strong>我只清了遥测缓存，没清设备树，结果切完组织后设备列表「串味」—— 显示的是上一个组织的设备，新绑的设备怎么都刷不出来。现在切 Token、切项目都会统一失效设备 / 状态 / 航线 / 任务缓存。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">② <strong style="color:#1677ff;">项目列表别用简写参数。</strong>拉项目时带 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">usage=simple</code> 会漏项目，改成 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">page / page_size=100</code> 全量拉。还有：设备没绑项目时，物模型和地图位置都是空的，需要先调绑定接口把设备挂到项目下。</p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">二、设备直播：一个接口开推，但 camera_index 会咬人</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">开直播就是这一个接口：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">POST /openapi/v0.1/live-stream/start
+{
+  "sn": "机场或飞行器 SN",
+  "camera_index": "165-0-7",
+  "video_expire": 3600,
+  "quality_type": "adaptive"
+}</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">参数看着简单，真跑起来最烦的是 <strong style="color:#1677ff;">camera_index</strong>。它不是通用常量，<strong style="color:#1677ff;">每台设备不一样</strong>，官方文档的获取方式是「组织设备列表里的 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">camera_list</code>」。而且<strong style="color:#1677ff;">飞行器没开机时它压根不上报相机</strong>，你根本拿不到该填什么。填错常见两种后果：<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">213001</code>（当前设备不支持该 camera_index）、<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">200610</code>（参数不合规）。<span style="color:#8c8c8c;">（错误码均为实测值，随版本可能变化）</span></p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">我的做法是把相机选择收敛成一个「设备类型范式」：先按设备类型（机场 / 飞行器）给出候选机位顺序，能探测到就按上报值选，探测不到就按范式兜底，前端拿不到画面时按候选顺序自动换下一个机位重试。注意别写成「某台机场固定用舱外」这种设备特化 —— 换一台同型号就得改代码。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">返回里有个 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">url_type</code>，官方文档说明司空 2 <strong style="color:#1677ff;">会动态选择直播供应商、互为备份</strong>（火山引擎、声网、SRS 等），所以<strong style="color:#1677ff;">多个供应商的 SDK 都要集成</strong>，否则可能遇到不支持的情况。我这边实测主要按 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">srs / agora / volc</code> 三类分支选择播放器（RTC 和 WHEP 两套都备着），拿到 url 先解析参数再决定走哪条链路。</p>
+
+<div style="background:#fff1f0;border-left:4px solid #ff4d4f;border-radius:6px;padding:14px 16px;margin:0 0 16px;">
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0;">💰 <strong style="color:#d4380d;">关于持续计费，这段请仔细看，我第一版就理解错了。</strong></p>
+<p style="font-size:16px;line-height:1.75;color:#333;margin:10px 0 0;">官方文档写的是「<strong style="color:#d4380d;">没有拉流观众 5 分钟后，将停止直播推流</strong>」。这句话<strong style="color:#d4380d;">不等于「关掉页面就不计费了」</strong> —— 自动停止之前仍有最长 5 分钟的推流窗口，这段时间的费用照常产生。</p>
+<p style="font-size:16px;line-height:1.75;color:#333;margin:10px 0 0;">更稳妥的做法：</p>
+<p style="font-size:16px;line-height:1.75;color:#333;margin:10px 0 0;">① <strong style="color:#d4380d;">主动控制有效期。</strong><code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">video_expire</code> 的含义就是「直播推流 Token 有效期，超过这个有效期直播将中止」，这是<strong style="color:#d4380d;">唯一能从自己这边主动掐断的参数</strong>。别图省事设成 7200，按实际观看时长设小一点（比如 600～1800），到期自动中止。</p>
+<p style="font-size:16px;line-height:1.75;color:#333;margin:10px 0 0;">② <strong style="color:#d4380d;">前端停止播放后，后端要主动收尾。</strong>我在这一版里只做了「播放器 stop + 提示用户 5 分钟后自动停」，严格说是不够的：正确做法是播放器停止时回调后端，由后端去调停止推流接口（如果当前版本文档提供了的话），并在 UI 上明确提示这 5 分钟延迟。</p>
+<p style="font-size:16px;line-height:1.75;color:#333;margin:10px 0 0;">③ 如果确实没有停止接口可用，那就<strong style="color:#d4380d;">把 video_expire 当成兜底开关</strong>，并把「可能还有最多 5 分钟计费窗口」如实告诉用户，别让人以为关掉页面就万事大吉。💡</p>
+</div>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">三、航线下发自动执行：三步上传 + 一步创建任务</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">上传 KMZ 到司空 2 是标准的「STS 临时凭证 + 对象存储」三步走，再加一步创建任务让机场自动执行：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">1) GET  /openapi/v0.1/project/sts-token
+   → endpoint / bucket / region / credentials / object_key_prefix
+2) 用 STS 凭证把文件 PUT 到司空 2 的存储桶
+3) POST /openapi/v0.1/wayline/finish-upload
+   { "object_key": "前缀/xxx.kmz", "name": "航线名" }
+4) POST /openapi/v0.1/flight-task   ← 创建任务，机场自动执行</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">两个真实卡点：</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">① <strong style="color:#1677ff;">region 给的是简写。</strong>司空 2 返回的 region 可能是 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">hz</code> / <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">bj</code> 这种，SDK 要的是 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">oss-cn-hangzhou</code>，得自己映射一层，否则凭证看着没问题但 PUT 一直失败。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">② <strong style="color:#1677ff;">创建任务有隐藏必填项。</strong><code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">resumable_status</code> 漏传会返回 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">200610 invalid param format</code>。它的官方枚举是 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">''</code>（不可续飞）/ <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">auto</code>（自动续飞）/ <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">manual</code>（手动续飞）。我现在统一用一个构造函数补齐默认值：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">{
+  name, wayline_uuid, sn,
+  time_zone: 'Asia/Shanghai',
+  rth_altitude: 100,
+  rth_mode: 'optimal',
+  wayline_precision_type: 'rtk',
+  resumable_status: 'manual',   // 断点续飞状态，实测必填
+  task_type: 'immediate'
+}</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">还有个我踩得很痛的：非蛙跳任务<strong style="color:#1677ff;">不要传 landing_dock_sn</strong>，实测直接 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">200101</code>。任务名也建议净化一下（去特殊字符、截断长度），脏名字同样会触发参数校验失败。<span style="color:#8c8c8c;">（错误码为实测值）</span></p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">📌 <strong style="color:#1677ff;">航线文件里不要混无关文件。</strong>KMZ 本质就是 ZIP，里面应该是 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">wpmz/template.kml</code> + <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">wpmz/waylines.wpml</code>（DJI 的 WPML 格式）。打包时如果混进 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">__MACOSX/</code>、<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">.DS_Store</code> 或者随手塞的别的素材，司空 2 解析就会出问题 —— 表象是「上传成功但航线不可用 / 执行报错」，很难往压缩包内容上想。打包前先确认 zip 里只有该有的东西。</p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">四、航线列表与执行记录：我们选了轮询，没用 Webhook</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">先说结论：<strong style="color:#1677ff;">航线列表和执行记录，我全程用的是主动轮询，没有上 Webhook。</strong></p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">原因很现实：一是原型和前期部署环境没有稳定的公网回调地址，Webhook 调不通还得做签名校验、重试、幂等一整套；二是这类管控平台本来就要一直开着页面看状态，轮询成本很低（物模型 10 秒一次，大屏 20 秒一次），而回调只在「有事件」时来，页面空闲还是要另外拉快照，等于两套机制都要维护。所以我选择先做轮询 + 短缓存，把复杂度压住。<strong style="color:#1677ff;">如果你要做的是无人值守的后台消费，Webhook 仍然是更合适的选择。</strong></p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">航线列表（上传成功的航线会在这里查到）：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">GET /openapi/v0.1/wayline
+ → list[].id / name / update_time / template_types …
+
+GET /openapi/v0.1/wayline/{id}
+ → download_url（下载直链）</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">执行记录用这个拉：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">GET /openapi/v0.1/flight-task/list
+    ?sn=xxx&amp;begin_at=时间戳&amp;end_at=时间戳</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">⚠️ <strong style="color:#1677ff;">这里有个非常大的坑：</strong><code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">sn / begin_at / end_at</code> 实际是必填，但<strong style="color:#1677ff;">缺参时司空 2 不报错，返回 code=0 + 空 list</strong>。你会以为是「这个组织从没飞过」，然后去查设备、查权限、查 Token……我是在后端主动校验参数并抛明确错误才定位到的。<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">begin_at / end_at</code> 是 number 类型的时间戳（我按秒级传的，具体单位以你对接的版本文档为准）。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">第二个坑：<strong style="color:#1677ff;">要用机场的 SN，不是飞行器的 SN</strong>。我用飞行器 SN 查永远 0 行，换成机巢 SN 立刻出来几十条记录。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">返回的字段里，任务名、状态、执行时间、<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">current_waypoint_index / total_waypoints</code>、<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">media_upload_status</code>、<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">resumable_status</code> 都能直接用，我在大屏左上角做成了「作业记录」浮层：可以按机场切换、可以折叠，本月各航线的执行次数用横向柱状图展示。另外 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">task_type = others</code> 的记录是机场自动产生的飞行动作（名字是 FlyToTask_ 开头），<strong style="color:#1677ff;">这类记录没有航拍照片</strong>，下面会讲到。</p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">五、航线文件下载：代理这一层省不掉</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">上传流程见第三节，这里单说下载（以及它背后那个很隐蔽的坑）。先 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">GET /openapi/v0.1/wayline/{id}</code> 拿 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">download_url</code>，然后<strong style="color:#1677ff;">由后端代理成同域下载</strong>。别让前端直接跳 CDN —— 会被浏览器拦、也有跨域问题。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">坑在这里：<strong style="color:#1677ff;">响应头只写 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">filename*=UTF-8''...</code>、没写 ASCII 兜底的 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">filename=</code></strong>，部分浏览器会丢掉扩展名，存下来叫「download」，回头再上传时被 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">accept=".kmz"</code> 直接过滤掉 —— 表现出来就是「我明明上传成功了，怎么选不中」。现在两个都写：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">Content-Disposition: attachment;
+  filename="ascii_fallback.kmz";
+  filename*=UTF-8''%E4%B8%AD%E6%96%87.kmz</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">另外 Node 22 的 fetch 返回的是 Web ReadableStream，不能直接 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">.pipe(res)</code>，要 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">Readable.fromWeb(upstream.body).pipe(res)</code>，否则就是 502。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">补一句：<strong style="color:#1677ff;">司空 2 OpenAPI 没有删除航线的接口</strong>，测试期间传上去的航线只能去司空 2 界面里手动删，跑自动化的时候记得清理。</p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">六、无人机拍的照片：签名链接必须走代理</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;"><code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">GET /openapi/v0.1/flight-task/{uuid}/media</code> 返回的列表里，每项有 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">uuid / preview_url / original_url</code> 等。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">这些直链<strong style="color:#1677ff;">带 auth_key 签名、按需签发</strong>，你把 URL 直接塞进 &lt;img&gt;，过一会儿必然裂图。所以我统一由后端代理（图片流直接转发），媒体<strong style="color:#1677ff;">列表</strong>本身缓存 5 分钟，单张图片每次走代理，前端只认一个同域地址。照片墙、原图下载都是这条链路。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">还有个高频报错：<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">219021 服务器异常</code><span style="color:#8c8c8c;">（实测值）</span>。一开始我以为是接口不稳定，后来发现<strong style="color:#1677ff;">它只出现在 task_type = others 的记录上</strong>（就是机场自己产生的飞行动作记录），这类任务压根没有航拍照片，但它照样返回 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">media_upload_status = upload_finished</code>，极具迷惑性。现在这类记录的按钮直接显示「无照片」，点进去也给明确文案而不是抛 toast。</p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">七、模型库：把司空 2 三维模型搬进自己的平台</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">接口只有两个：<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">GET /openapi/v0.1/model</code> 拉项目下的模型列表，<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">GET /openapi/v0.1/model/{model_id}</code> 拿详情，里面有 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">preview_url</code>（预览图）和 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">url</code>（模型包 zip）。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">要在自己平台里<strong style="color:#1677ff;">三维预览</strong>，就得把 zip 拉下来解析。我的链路是：后端下载 → 解压到磁盘 → 生成清单 → 按路径代理单个瓦片文件，前端用 Three.js 渲染。解压出来是标准的 3D Tiles：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">Project1 2/B3DM/Model_0/tileset.json        ← 总根，引用下面两个块
+Project1 2/B3DM/Model_0/BlockA/tileset.json ← 子块（外部瓦片集）
+Project1 2/B3DM/Model_0/BlockX/tileset.json
+BlockA_L16_2.json / L17_7.json / L18_17.json … ← 层层嵌套的子瓦片集
+*.b3dm                                       ← 真正的瓦片数据</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;"><strong style="color:#1677ff;">先纠正一个我自己也写错过的技术点：b3dm 不是「跳 28 字节就是 GLB」。</strong>b3dm 的完整结构是「28 字节头 → featureTable JSON → featureTable Binary → batchTable JSON → batchTable Binary → 内嵌 GLB」。头里带着各段的长度字段，必须按长度依次跳过，剩下的才是 GLB：</p>
+
+<pre style="background:#f6f8fa;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 16px;"><code style="font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.6;color:#333;">// 28 字节头：magic(4) version(4) byteLength(8)
+//            ftJSONLen(4) ftBinLen(4) btJSONLen(4) btBinLen(4)
+const ftJson = dv.getUint32(12, true);
+const ftBin  = dv.getUint32(16, true);
+const btJson = dv.getUint32(20, true);
+const btBin  = dv.getUint32(24, true);
+const start  = 28 + ftJson + ftBin + btJson + btBin;   // ← GLB 起点
+const glb    = u8.slice(start).buffer;                  // 喂给 GLTFLoader</code></pre>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">（顺带一提：<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">u8.slice()</code> 拿到的是带 byteOffset 的视图，直接取 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">.buffer</code> 会带上偏移，要处理好偏移和长度，我在这里栽过一次。）</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">其余几个实测结论：</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">• <strong style="color:#1677ff;">内嵌的是标准 GLB</strong>，取出来直接喂给 GLTFLoader，不用上 Cesium。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">• 模型常用 Draco 压缩（<code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">KHR_draco_mesh_compression</code>），需要额外配 DRACOLoader。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">• <strong style="color:#1677ff;">外部瓦片集要递归展开。</strong>总根 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">tileset.json</code> 用 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">content.uri</code> 引用 BlockA / BlockX，块里又层层引用 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">L16 → L17 → L18</code> 的子 json。只解析第一个 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">tileset.json</code> 的话，655 个瓦片里只能渲染出十来个。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">• <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">gltfUpAxis: "Z"</code>，坐标是 ECEF 大数（比如 -2390674 / 5385663 / 2434096），要<strong style="color:#1677ff;">先把整体平移到原点、再整体转 Y-up</strong>（顺序是先乘瓦片的 ECEF transform，再对整体做 rotateX(-90°)，反了模型姿态就歪）。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">• <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">geometricError</code> 在我这份数据里大量是 1e10 这种异常值，拿它做 LOD 判据会失真，我改用<strong style="color:#1677ff;">瓦片包围球的屏幕投影像素</strong>决定是否细化，这样放大时才会真的加载更精细的瓦片。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">另外 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">preview_url</code> 经常 404（OSS NoSuchKey），所以预览图也必须走代理，并且做好「预览图不可用」的兜底。</p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">八、前端长什么样</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">最后拼出来的是六个一级菜单：<strong style="color:#1677ff;">首页大屏 / 虚拟座舱 / 航线管理 / 设备管理 / 模型库 / 其他设置</strong>，BFF 单端口 8787 同时提供 API 和前端静态资源。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;"><strong style="color:#1677ff;">设备管理：</strong>左侧是设备列表（机场 + 飞行器，带在线状态和所属项目），选中一台，右侧就是它的物模型实时状态，按设备类型分组展示 —— 机场是「运行信息 / 设备指标 / 舱内环境」，飞行器是「飞行信息 / 位置 / 电池 / 飞行器设置」。数据来自 <code style="background:#f2f3f5;padding:1px 4px;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:14px;">GET /openapi/v0.1/device/{sn}/state</code>，10 秒轮询。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;"><strong style="color:#1677ff;">航线管理：</strong>航线列表 + 下载 + 上传 + 一键起飞（起飞前会做预检：控制权、电量、RTK、返航高度），起飞后轮询任务状态直到执行结束。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;"><strong style="color:#1677ff;">首页大屏：</strong>左上角的作业记录浮层可以按机场切换、折叠，本月航线执行次数用横向柱状图；地图支持多套底图切换，右下角是可折叠的底图工具栏。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;"><strong style="color:#1677ff;">虚拟座舱：</strong>机场画面和飞行器主画面两路直播并存，卡住会自动换机位重试；拿不到画面时给出可读的原因，而不是冷冰冰的错误码。</p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #ffa940;padding-left:10px;">九、坦诚说说还差在哪</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">所以它现在是一个<strong style="color:#1677ff;">能跑通主链路的原型</strong>，离「生产可用」还有距离，这几条是我自己最不满意的：</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">😕 <strong style="color:#1677ff;">模型预览效果差强人意。</strong>3D Tiles 的 LOD 是自己撸的，放大能变清晰，但和 Cesium / 司空 2 原生 viewer 比，加载策略、内存占用、首屏速度都还有明显差距；超过 300MB 的模型包我直接放弃了浏览器预览，退回预览图。Draco 解码器还依赖外部 CDN，内网环境得自己托管一份。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">😕 <strong style="color:#1677ff;">执行完航线自动建模没做。</strong>现在只能看已有模型，飞完自动生成三维模型这条链路（建模任务下发 + 结果回取）还没接。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">😕 <strong style="color:#1677ff;">没办法手动控制无人机。</strong>目前只能下发航线任务、获取控制权后做很有限的指令（返航、暂停/恢复），没有实时摇杆手动飞行 —— 真要手动飞还是得回司空 2。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">😕 <strong style="color:#1677ff;">直播的停止链路不完整。</strong>如第二节所说，我目前只做了「前端停止播放 + 提示 5 分钟后自动停」，没有把后端主动收尾补上，这一块要上线得先补完。</p>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">😕 <strong style="color:#1677ff;">没办法画航线，航线还是得在司空 2 里画。</strong>OpenAPI 只给了「上传 / 下载 / 执行」这一圈能力，<strong style="color:#1677ff;">没有航线编辑能力</strong> —— 打航点、设动作、调高度速度这些都没法在我们这边做，只能先在司空 2（或 Pilot 2）里规划好，再上传/同步过来。这大概是这套能力里最大的一块空白，也是客户最容易误会的地方。<span style="color:#8c8c8c;">（另外：大屏里部分执行记录还是演示数据；机场相机切换的成功提示没接住，自动化测试里一直挂着一条告警。）</span></p>
+
+<h2 style="font-size:20px;line-height:1.4;color:#1a1a1a;font-weight:bold;margin:32px 0 14px;border-left:4px solid #1677ff;padding-left:10px;">写在最后</h2>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0 0 16px;">回头看，从那个中秋的 demo 到现在，真正花时间的地方其实<strong style="color:#1677ff;">不是接口调用本身</strong>，而是各种「接口不报错但行为不符合直觉」的工程细节：缺参返回空列表、飞行器 SN 查不到记录、签名链接会过期、region 是简写、KMZ 里多一个文件就解析失败、b3dm 不是跳 28 字节就完事……这些才是二次开发的真实成本，也是我写这篇文章的主要动机。</p>
+
+<div style="background:#fff7e6;border-left:4px solid #ffa940;border-radius:6px;padding:16px 18px;margin:24px 0 16px;">
+<p style="font-size:16px;line-height:1.75;color:#333;margin:0;">把这些坑都算上，我依然想强调一句：<strong style="color:#d4380d;font-size:17px;">司空 2 二次开发的难度真的不大</strong> —— 难的是工程细节，不是接口本身。接口设计清晰、Header 鉴权简单、能力覆盖完整（设备、直播、航线、任务、媒体、模型），一个熟手几天就能把主干跑通。</p>
+<p style="font-size:16px;line-height:1.75;color:#333;margin:12px 0 0;">所以对于那些<strong style="color:#d4380d;font-size:17px;">需要快速把无人机操作集成到客户自有平台</strong>的场景 —— 已有调度系统、已有巡检工单、已有大屏，只是缺一块「无人机能力」—— 走司空 2 OpenAPI <strong style="color:#d4380d;font-size:17px;">十分便捷，意义重大</strong>：不用自建飞控、不用重复造轮子，客户也不用再多学一套系统。🚀</p>
+</div>
+
+<p style="font-size:16px;line-height:1.75;color:#333;margin:24px 0 0;">如果你也在做类似的事情，欢迎交流踩坑经验。祝各位的开发环境永远不缺设备在线。😄</p>
+
+</div>
+
+</body>
+</html>

@@ -1,0 +1,145 @@
+<template>
+  <div class="card" style="height: 100%; display: flex; flex-direction: column">
+    <div class="card-head">
+      <span>模型库</span>
+      <span class="sub">当前项目：{{ store.projectName || '未选择' }} · 共 {{ list.length }} 个模型</span>
+      <div style="flex: 1"></div>
+      <el-button size="small" :loading="loading" @click="load">刷新</el-button>
+    </div>
+    <div class="card-body" style="flex: 1; padding: 0; overflow: auto">
+      <el-table :data="list" size="small" v-loading="loading">
+        <el-table-column prop="name" label="模型名称" min-width="180" show-overflow-tooltip />
+        <el-table-column label="类型" width="110">
+          <template #default="{ row }">
+            <span class="tag" :class="row.file_type === 'model_3d' ? 'info' : 'ok'">
+              {{ row.file_type === 'model_3d' ? '3D 模型' : '2D 模型' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="120">
+          <template #default="{ row }">{{ sizeText(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="更新时间" width="170">
+          <template #default="{ row }">{{ fmt(row.update_at) }}</template>
+        </el-table-column>
+        <el-table-column label="地图展示" width="100">
+          <template #default="{ row }">
+            <span class="small" :style="{ color: row.show_on_map ? 'var(--c-ok)' : 'var(--c-text-2)' }">
+              {{ row.show_on_map ? '已展示' : '未展示' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="140" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" link type="primary" @click="openViewer(row)">三维预览</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <div class="muted small" style="padding: 24px">
+            暂无模型{{ store.projectUuid ? '' : '，请先在顶部选择项目' }}
+          </div>
+        </template>
+      </el-table>
+    </div>
+
+    <el-drawer v-model="viewerVisible" :title="`模型预览 · ${current?.name || ''}`" size="62%">
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <!-- 三维窗口：能渲染就渲染真实模型，不能渲染时退回预览图 -->
+        <div class="viewer-box">
+          <ModelViewer v-if="viewerVisible && current?.id" :model-id="current.id" :model-name="current.name" />
+        </div>
+
+        <div class="kv"><span class="k">模型 ID</span><span class="v mono">{{ current?.id }}</span></div>
+        <div class="kv"><span class="k">类型</span><span class="v">{{ current?.file_type === 'model_3d' ? '3D 模型' : '2D 模型' }}</span></div>
+        <div class="kv"><span class="k">大小</span><span class="v">{{ sizeText(current?.size) }}</span></div>
+        <div class="kv"><span class="k">创建时间</span><span class="v">{{ fmt(current?.create_at) }}</span></div>
+        <div class="kv"><span class="k">更新时间</span><span class="v">{{ fmt(current?.update_at) }}</span></div>
+        <div class="kv"><span class="k">地图展示</span><span class="v">{{ current?.show_on_map ? '是' : '否' }}</span></div>
+
+        <div style="display: flex; gap: 10px; margin-top: 4px">
+          <el-button
+            size="small"
+            type="primary"
+            tag="a"
+            :href="packageSrc"
+            target="_blank"
+          >
+            下载模型包
+          </el-button>
+          <el-button size="small" tag="a" :href="previewSrc" target="_blank">查看预览图</el-button>
+        </div>
+        <div class="muted small">
+          三维窗口由模型包内的 b3dm / glb 直接渲染；若模型包过大或仍在压缩，会自动退回预览图。
+        </div>
+      </div>
+    </el-drawer>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, watch } from 'vue';
+import { ElMessage } from 'element-plus';
+import { useSessionStore } from '../stores/session';
+import { modelApi, errMsg } from '../api/dji';
+import ModelViewer from '../components/ModelViewer.vue';
+
+const store = useSessionStore();
+const list = ref([]);
+const loading = ref(false);
+const viewerVisible = ref(false);
+const current = ref(null);
+
+const packageSrc = computed(() =>
+  current.value?.id ? modelApi.packageSrc(current.value.id, current.value.name) : ''
+);
+const previewSrc = computed(() =>
+  current.value?.id ? modelApi.previewSrc(current.value.id) : ''
+);
+
+function fmt(ts) {
+  if (!ts) return '--';
+  const d = new Date(Number(ts));
+  if (Number.isNaN(d.getTime())) return '--';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function sizeText(n) {
+  if (!n || n <= 0) return '--';
+  if (n > 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (n > 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n > 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+async function load() {
+  loading.value = true;
+  const r = await modelApi.list();
+  loading.value = false;
+  if (r?.ok) {
+    list.value = r.data?.list || [];
+  } else {
+    list.value = [];
+    ElMessage.error(errMsg(r, '模型列表获取失败'));
+  }
+}
+
+function openViewer(row) {
+  current.value = row;
+  viewerVisible.value = true;
+}
+
+onMounted(load);
+watch(() => store.projectUuid, load);
+</script>
+
+<style scoped>
+.card-head { display: flex; align-items: center; gap: 12px; }
+.viewer-box {
+  width: 100%; height: 420px; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--c-line); background: var(--c-bg-2);
+}
+.kv { display: flex; justify-content: space-between; font-size: 13px; }
+.kv .k { color: var(--c-text-2); }
+.kv .v { color: var(--c-text-1); }
+</style>

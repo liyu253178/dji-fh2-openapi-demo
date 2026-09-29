@@ -1,0 +1,19 @@
+{
+  "name": "dji-fh2-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "大疆司空2 OpenAPI 代理服务：鉴权转发、日志采集、航线对象存储上传",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "ali-oss": "^6.21.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "fflate": "^0.8.3",
+    "multer": "^2.4.0"
+  }
+}

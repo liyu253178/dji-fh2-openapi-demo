@@ -1,0 +1,26 @@
+# 依赖
+node_modules/
+package-lock.json
+
+# 构建产物
+web/dist/
+
+# 运行时数据：含 OpenAPI Token、已选项目、模型包缓存，绝不能提交
+server/data/
+*.log
+
+# 官方接口文档副本（第三方文档，且含真实 Token 示例）
+docs/api/
+
+# 自动化测试产物（截图可能含设备 SN / 客户项目名）
+tests/report/
+
+# 编辑器 / 系统
+.DS_Store
+.vscode/
+.idea/
+*.timestamp-*.mjs
+
+# 环境变量
+.env
+.env.local

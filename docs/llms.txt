@@ -1,0 +1,111 @@
+# 全新司空 2 OpenAPI V1.0
+
+## Docs
+- 调用指南 [认证鉴权教程](https://fh2-api.apifox.cn/doc-5662670.md): 
+- 调用指南 [错误码](https://fh2-api.apifox.cn/doc-7183966.md): 
+- 系统服务 [司空公有云接入点信息](https://fh2-api.apifox.cn/doc-6282018.md): 
+- 组织项目 [组织项目教程](https://fh2-api.apifox.cn/doc-5659280.md): 
+- 设备管理 [设备管理教程](https://fh2-api.apifox.cn/doc-5667026.md): 
+- 直播管理 [直播管理教程](https://fh2-api.apifox.cn/doc-5668417.md): 
+- 直播管理 > 旁路推流（仅支持私有云） [码流转发错误码](https://fh2-api.apifox.cn/doc-5690013.md): 
+- 任务管理 [任务管理教程](https://fh2-api.apifox.cn/doc-5668549.md): 
+- 航线管理 [航线管理教程](https://fh2-api.apifox.cn/doc-5668452.md): 
+- 模型管理 [模型管理教程](https://fh2-api.apifox.cn/doc-6021163.md): 
+- 模型管理 [模型重建坐标系](https://fh2-api.apifox.cn/doc-5883225.md): 
+- 标注管理 [标注管理教程](https://fh2-api.apifox.cn/doc-6028316.md): 
+- 开放建模 [开放建模教程](https://fh2-api.apifox.cn/doc-8016077.md): 
+- 开放建模 [错误码](https://fh2-api.apifox.cn/doc-8016099.md): 
+- 开放建模 [更新日志](https://fh2-api.apifox.cn/doc-8711305.md): 
+- 开放建模 [算法参数介绍](https://fh2-api.apifox.cn/doc-8016100.md): 
+
+## API Docs
+- 系统服务 [查询司空 2 系统状态](https://fh2-api.apifox.cn/api-229642876.md): 查询私有化系统状态，code 返回 0 则表示司空 2 已正常运行。
+- 组织项目 > 项目创建 > 项目设置 [更新设备绑定的项目](https://fh2-api.apifox.cn/api-320997340.md): 更新通信模块及机场设备所属的具体项目
+- 组织项目 [获取组织下的项目列表](https://fh2-api.apifox.cn/api-221842027.md): 获取组织下的项目列表，通过  `Header` 的 `X-User-Token` 参数设置用户密钥，该接口将返回该用户密钥对应组织下的所有项目列表。
+- 组织项目 [获取组织下的设备列表](https://fh2-api.apifox.cn/api-236854461.md): 获取组织下的「机场场景」设备列表，通过  `Header` 的 `X-User-Token` 参数设置用户密钥，该接口将返回用户密钥对应组织下的所有设备列表。
+- 组织项目 [获取项目下的设备列表](https://fh2-api.apifox.cn/api-221842028.md): 获取组织下的设备列表，通过  `Header` 的 `X-User-Token` 参数设置用户密钥，通过`Headers`的`X-Project-Uuid`参数设置项目`uuid`，该接口将返回指定项目下的所有设备列表。
+- 组织项目 [获取项目的存储上传凭证](https://fh2-api.apifox.cn/api-221842030.md): 获取项目下存储桶的上传凭据，通过  `Header` 的 `X-User-Token` 参数设置用户密钥，通过`Headers`的`X-Project-Uuid`参数设置项目`uuid`，该接口将返回指定项目的存储桶上传凭据。
+- 组织项目 [添加人员到项目](https://fh2-api.apifox.cn/api-261427835.md): 将人员以某种角色添加到项目中，支持新增和更新。通过 Header 的 `X-User-Token` 参数设置用户密钥，通过 Headers 的 `X-Project-Uuid` 参数设置项目uuid
+- 设备管理 > 网络配置初始化 [查询网络配置](https://fh2-api.apifox.cn/api-396083412.md): 获取设备有线网络连接状态以及设备网络配置信息
+- 设备管理 > 网络配置初始化 [设置网络配置](https://fh2-api.apifox.cn/api-396083418.md): 设置设备的网络配置，包含DHCP、IP地址、子网掩码、默认网关、首选DNS、备用DNS等。
+- 设备管理 > 网络配置初始化 [启动网络检测任务](https://fh2-api.apifox.cn/api-396083420.md): 网络检测分成两个步骤：
+- 设备管理 > 网络配置初始化 [查询网络检测进度](https://fh2-api.apifox.cn/api-396083422.md): 网络检测分成两个步骤：
+- 设备管理 > 网络配置初始化 [查询ntp server配置](https://fh2-api.apifox.cn/api-396083424.md): 查询ntp server配置信息。
+- 设备管理 > 网络配置初始化 [设置ntp server](https://fh2-api.apifox.cn/api-396083425.md): 设置ntp server的配置项
+- 设备管理 > 4G配置 [查询增强图传是否开启](https://fh2-api.apifox.cn/api-396083413.md): 查询增强图传的状态
+- 设备管理 > 4G配置 [切换增强图传开启状态](https://fh2-api.apifox.cn/api-396083414.md): 开启或者关闭增强图传功能
+- 设备管理 > 4G配置 [查询APN配置](https://fh2-api.apifox.cn/api-396083416.md): 获取当前APN配置信息
+- 设备管理 > 4G配置 [设置APN配置](https://fh2-api.apifox.cn/api-396083419.md): 下发APN配置到设备
+- 设备管理 > 4G配置 [查询自定义服务配置](https://fh2-api.apifox.cn/api-396083421.md): 查询服务配置
+- 设备管理 > 4G配置 [设置自定义服务配置](https://fh2-api.apifox.cn/api-396083423.md): 设置自定义服务的配置
+- 设备管理 > 4G配置 [eSIM和SIM切换](https://fh2-api.apifox.cn/api-396083426.md): 实体SIM和eSIM卡切换接口
+- 设备管理 > 设备标定 [设备标定](https://fh2-api.apifox.cn/api-396083411.md): 给设备下发标定指令
+- 设备管理 > 设备标定 [设备标定控制](https://fh2-api.apifox.cn/api-322115756.md): 下发设备标定控制指令，支持设备重新自收敛或停止PPP标定。
+- 设备管理 > 设备标定 [查询标定信息](https://fh2-api.apifox.cn/api-322115757.md): 查询标定参数信息
+- 设备管理 > 设备标定 [查询标定进度](https://fh2-api.apifox.cn/api-396083415.md): 查询标定进度。
+- 设备管理 > 远程调试 [开启远程调试](https://fh2-api.apifox.cn/api-326707000.md): 开启远程调试
+- 设备管理 > 远程调试 [关闭远程调试](https://fh2-api.apifox.cn/api-326708026.md): 关闭远程调试
+- 设备管理 > 对频信息 [清除设备内中继对频信息](https://fh2-api.apifox.cn/api-337695963.md): 清除设备内中继对频信息接口
+- 设备管理 [物模型获取](https://fh2-api.apifox.cn/api-221898285.md): 物模型获取，可通过传入`device_sn`获取对应设备的物模型信息。
+- 设备管理 [HMS信息获取](https://fh2-api.apifox.cn/api-253909522.md): 健康管理系统信息获取，可通过传入 `device_sn_list` 获取设备列表的异常状态信息。
+- 设备管理 [实时控制指令下发](https://fh2-api.apifox.cn/api-221842038.md): 在航线飞行或者手动飞行过程中，可以调用此命令对飞行器进行实时控制，比如返航，取消返航，飞行任务暂停和恢复等操作。
+- 设备管理 [机场相机切换](https://fh2-api.apifox.cn/api-236847429.md): 支持机场相机的切换，可切换舱内和舱外相机。
+- 设备管理 [飞行器镜头切换](https://fh2-api.apifox.cn/api-238194171.md): 支持飞行器相机镜头的切换，可切换广角，变焦和红外。
+- 设备管理 [控制权获取](https://fh2-api.apifox.cn/api-238192076.md): 如果你需要针对特定飞行器设备的负载进行操作，需要先获取该负载设备的控制权，然后对这个负载进行操作。比如对飞行器的某个负载相机的镜头进行切换。
+- 设备管理 [控制权释放](https://fh2-api.apifox.cn/api-238192097.md): 释放指定设备的指定负载的控制权。
+- 设备管理 [图传清晰度设置](https://fh2-api.apifox.cn/api-236847454.md): 设置图传清晰度，支持自动，流畅，超清设置。
+- 设备管理 [自定义网络RTK标定](https://fh2-api.apifox.cn/api-229645112.md): 自定义网络RTK标定，机场在部署或者移动位置后，需要进行自定义网络RTK标定，机场才能精准定位自身位置。
+- 设备管理 [指定设备进入中继对频模式（仅支持私有云与中继设备）](https://fh2-api.apifox.cn/api-284542522.md): 中继对频的基础逻辑：中继机和作业控，切记在进行对频时标记好中继机与作业机，不要随意尝试对频操作，若误触则可以通过重启设备以及重新对频的方式恢复
+- 设备管理 [查询中继对频的结果（仅支持私有云与中继设备）](https://fh2-api.apifox.cn/api-284546083.md): 
+- 直播管理 > 直播推流 [开启直播](https://fh2-api.apifox.cn/api-238192135.md): 启用设备直播功能后，设备将自动向媒体服务器推流，并返回对应直播供应商的鉴权信息。需集成供应商的SDK（如火山引擎、声网、SRS等），通过鉴权信息调用其接口拉取直播流。
+- 直播管理 > 旁路推流（仅支持私有云） [创建码流转发器](https://fh2-api.apifox.cn/api-221842033.md): 创建码流转发器，调用此接口将在司空 2 上创建和存储码流转发器，可调用`获取码流转发器列表`获取已创建的码流转发器，然后调用`开启/关闭码流转发器`开启码流转发功能。
+- 直播管理 > 旁路推流（仅支持私有云） [开启/关闭码流转发器](https://fh2-api.apifox.cn/api-221995309.md): 开启和关闭码流转发器，在创建码流转发器以后，可以调用此接口开启码流转发器，开启后，设备上线会自动进行码流转发。
+- 直播管理 > 旁路推流（仅支持私有云） [获取码流转码器列表](https://fh2-api.apifox.cn/api-221842034.md): 获取码流转发器列表，创建码流转发器后，可调用此接口获取已创建的码流转发器。
+- 直播管理 > 旁路推流（仅支持私有云） [删除码流转发器](https://fh2-api.apifox.cn/api-221842035.md): 删除码流转发器，将在司空 2 上删除码流转发器记录。
+- 任务管理 [创建飞行任务](https://fh2-api.apifox.cn/api-221842037.md): 创建航线飞行任务，可通过 `航线上传完成通知`接口获取上传到司空 2 上的航线 UUID，然后调用此接口创建航线任务。
+- 任务管理 [更新飞行任务状态](https://fh2-api.apifox.cn/api-257494411.md): 支持飞行任务状态更新， 仅支持单次定时任务，重复任务和连续任务类型。
+- 任务管理 [获取飞行任务信息](https://fh2-api.apifox.cn/api-221842041.md): 获取飞行任务信息，开启航线任务飞行后，可通过此接口获取任务信息，任务运行过程中的状态，以及任务产生的媒体文件信息等。
+- 任务管理 [获取飞行任务列表](https://fh2-api.apifox.cn/api-257466498.md): 获取飞行任务列表，可通过传入任务时间，任务开始时间，任务结束时间，任务类型，飞行任务类型和任务状态作为过滤器获取飞行任务列表。
+- 任务管理 [获取飞行任务产生的媒体资源](https://fh2-api.apifox.cn/api-225707532.md): 获取飞行任务产生的媒体资源。
+- 任务管理 [获取飞行任务轨迹信息](https://fh2-api.apifox.cn/api-253982549.md): 获取飞行任务的轨迹信息。飞机任务完成后，可通过此接口获取飞行任务的轨迹信息，用于生成飞行轨迹。
+- 任务管理 [支持断点续飞的立即任务](https://fh2-api.apifox.cn/api-390424570.md): 
+- 航线管理 [航线上传完成通知](https://fh2-api.apifox.cn/api-221842031.md): 将航线上传完成的通知推送給司空 2后 ，司空 2 航线管理页面将显示上传的航线信息, 同时此接口会返回所上传航线文件的名称和 UUID。
+- 航线管理 [获取项目下的航线列表 ](https://fh2-api.apifox.cn/api-256114007.md): 获取项目下所有航线列表信息。其中` id` 可作为 `wayline_id` 传入到 `获取航线详情` 接口用于获取航线的下载地址。
+- 航线管理 [获取航线详情](https://fh2-api.apifox.cn/api-256115909.md): 拉取航线详情，可通过`获取项目下的航线列表`接口获取 wayline_id 列表，用于此接口的入参。
+- 模型管理 [获取项目下的模型列表](https://fh2-api.apifox.cn/api-257000437.md): 获取项目下的模型列表。
+- 模型管理 [模型重建](https://fh2-api.apifox.cn/api-257170077.md): 云端后重建
+- 模型管理 [获取模型详情](https://fh2-api.apifox.cn/api-257039924.md): 获取模型详情信息。
+- 模型管理 [获取模型文件下载链接](https://fh2-api.apifox.cn/api-369985356.md): 如果获取到的url为空，说明模型仍在压缩中，请等待1分钟后重试，较大模型可能需要更长时间。
+- 标注管理 [创建地图标注](https://fh2-api.apifox.cn/api-221842029.md): 创建地图标注，支持点、线、面地图标注的创建。 
+- 开放建模 [获取正在重建中的模型详情](https://fh2-api.apifox.cn/api-454016288.md): 获取正在重建中模型详情。
+- 开放建模 [获取资源详情](https://fh2-api.apifox.cn/api-404164665.md): 获取资源详情，用于查询资源状态和大小。
+- 开放建模 [获取上传凭证](https://fh2-api.apifox.cn/api-404163675.md): 获取上传凭证，用于上传文件到云存储。
+- 开放建模 [开始重建任务](https://fh2-api.apifox.cn/api-404166985.md): 1. 开始重建任务，用于开始重建任务，可同时建多种类型的模型，但至少需要传一种 `parameter_` 参数。
+- 开放建模 [上传回调](https://fh2-api.apifox.cn/api-404164388.md): 上传回调，用于上传文件后，通知需要复制的文件资源有哪些。
+- 开放建模 [删除资源](https://fh2-api.apifox.cn/api-404166687.md): 删除资源，用于删除上传的资源，释放存储空间。
+- 开放建模 [停止重建任务](https://fh2-api.apifox.cn/api-404168601.md): 
+- 开放建模 [获取模型详情](https://fh2-api.apifox.cn/api-404169123.md): 获取模型详情，用于查询模型状态、大小和任务进度。
+- 开放建模 [删除模型](https://fh2-api.apifox.cn/api-404169204.md): 删除模型，用于删除模型，释放存储空间，如果模型处理建模中，则也同步会停止建模。
+
+## Schemas
+- 默认目录 [公共结构](https://fh2-api.apifox.cn/schema-124064052.md): 
+- 硬件设备 [Dock 1](https://fh2-api.apifox.cn/schema-141594005.md): 
+- 硬件设备 [Matrice 30 Series](https://fh2-api.apifox.cn/schema-141594025.md): 
+- 硬件设备 [Dock 2](https://fh2-api.apifox.cn/schema-124126743.md): 
+- 硬件设备 [Matrice 3D  Series](https://fh2-api.apifox.cn/schema-141593583.md): 
+- 硬件设备 [DJI RC Plus 2](https://fh2-api.apifox.cn/schema-141753829.md): 
+- 硬件设备 [Mavic 3 Enterprise Series](https://fh2-api.apifox.cn/schema-144246668.md): 
+- 硬件设备 [DJI  RC Pro Enterprise](https://fh2-api.apifox.cn/schema-144246674.md): 
+- 硬件设备 [Matrice 300 RTK](https://fh2-api.apifox.cn/schema-144246584.md): 
+- 硬件设备 [Matrice 350 RTK](https://fh2-api.apifox.cn/schema-144246671.md): 
+- 硬件设备 [Matrice 4  Series](https://fh2-api.apifox.cn/schema-141753796.md): 
+- 硬件设备 [DJI Smart Controller Enterprise](https://fh2-api.apifox.cn/schema-144246672.md): 
+- 硬件设备 [DJI RC Plus](https://fh2-api.apifox.cn/schema-144246673.md): 
+- 硬件设备 [Dock 3](https://fh2-api.apifox.cn/schema-146699425.md): 
+- 硬件设备 [Matrice 4D  Series](https://fh2-api.apifox.cn/schema-146700020.md): 
+- 实时应用 [schema_option_rmtp](https://fh2-api.apifox.cn/schema-124170037.md): 
+- 实时应用 [schema_option_gb28181](https://fh2-api.apifox.cn/schema-124171154.md): 
+- 实时应用 [task_repeat_option_relative_monthly](https://fh2-api.apifox.cn/schema-145112036.md): 
+- 实时应用 [  task_repeat_option_absolute_monthly](https://fh2-api.apifox.cn/schema-145112422.md): 
+- 实时应用 [task_repeat_option_weekly](https://fh2-api.apifox.cn/schema-145115632.md): 
+- 实时应用 [  task_repeat_option_daily](https://fh2-api.apifox.cn/schema-145116633.md): 
