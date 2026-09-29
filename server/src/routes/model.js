@@ -53,17 +53,72 @@ async function ensureDir(p) {
   await fsp.mkdir(p, { recursive: true });
 }
 
-/** 模型详情（带短缓存） */
-async function fetchDetail(id) {
-  const hit = detailCache.get(String(id));
+/**
+ * 模型详情（带短缓存）
+ * 注意：详情里的 url / preview_url 是带签名的直链，签名有效期通常远长于本缓存，
+ * 但对象可能已被清理，所以取链失败时必须 force=true 重取一次再判定。
+ */
+async function fetchDetail(id, force = false) {
+  const key = String(id);
+  if (force) detailCache.delete(key);
+  const hit = detailCache.get(key);
   if (hit && Date.now() - hit.ts < DETAIL_TTL) return hit.data;
   const r = await request({
     method: 'GET',
     path: `/model/${encodeURIComponent(id)}`,
     tag: '模型库',
   });
-  if (r?.ok) detailCache.set(String(id), { ts: Date.now(), data: r.data });
+  if (r?.ok) detailCache.set(key, { ts: Date.now(), data: r.data });
   return r?.data || null;
+}
+
+/** OSS / CDN 常见错误码 → 人话 */
+const CDN_ERRORS = {
+  NoSuchKey: '源文件在对象存储里已不存在（司空 2 里记录还在，文件已被清理或当初就没生成成功），需要在司空 2 重新生成 / 重新上传该模型',
+  AccessDenied: '签名链接无访问权限或已过期',
+  SignatureDoesNotMatch: '签名校验失败（链接被改写或已过期）',
+  RequestTimeTooSkewed: '本机时间与对象存储服务器相差过大，请校准系统时间',
+  NoSuchBucket: '存储桶不存在（可能接入点/区域不匹配）',
+};
+
+/** 读取 CDN 错误体，翻译成可读原因 */
+async function readCdnError(res) {
+  const text = (await res.text().catch(() => '')) || '';
+  const code = (text.match(/<Code>([^<]+)<\/Code>/) || [])[1] || '';
+  const msg = (text.match(/<Message>([^<]+)<\/Message>/) || [])[1] || '';
+  const reason = CDN_ERRORS[code] || msg || '';
+  return { code, msg, reason, raw: text.replace(/\s+/g, ' ').slice(0, 200) };
+}
+
+/**
+ * 拉取模型包（或预览图）直链。
+ * 遇到 403/404 先强刷一次详情重签再试一次——排除"签名过期 / 对象同步延迟"这类可恢复原因，
+ * 仍然失败才认定是源文件缺失。
+ */
+async function fetchSigned(url, id, label) {
+  let res = await fetch(url, { redirect: 'follow' });
+  if (res.status === 403 || res.status === 404) {
+    const first = await readCdnError(res);
+    const fresh = await fetchDetail(id, true);
+    const newUrl = fresh?.url || fresh?.preview_url;
+    if (newUrl && newUrl !== url) {
+      const retry = await fetch(newUrl, { redirect: 'follow' });
+      if (retry.ok) {
+        log.info('模型库', `${label}：重签后重试成功（首次 ${res.status} ${first.code}）`);
+        return { res: retry, url: newUrl, recovered: true };
+      }
+      const second = await readCdnError(retry);
+      return { res: retry, url: newUrl, err: second, firstErr: first };
+    }
+    return { res, url, err: first };
+  }
+  return { res, url };
+}
+
+function cdnFailMessage(label, status, err) {
+  const base = `${label}失败：CDN 返回 ${status}`;
+  if (!err) return base;
+  return `${base}（${err.code || '未知'}${err.reason ? ' · ' + err.reason : ''}）`;
 }
 
 /** 获取项目下的模型列表 */
@@ -88,8 +143,17 @@ router.get('/:id/preview', async (req, res) => {
     const d = await fetchDetail(req.params.id);
     const url = d?.preview_url;
     if (!url) return res.status(404).json({ ok: false, message: '该模型没有预览图' });
-    const upstream = await fetch(url, { redirect: 'follow' });
-    if (!upstream.ok) return res.status(502).json({ ok: false, message: `预览图 CDN 返回 ${upstream.status}` });
+    const got = await fetchSigned(url, req.params.id, '预览图代理');
+    if (!got.res.ok) {
+      const err = got.err || (await readCdnError(got.res));
+      return res.status(502).json({
+        ok: false,
+        message: cdnFailMessage('预览图代理', got.res.status, err),
+        code: err.code || 'CDN_ERROR',
+        hint: err.reason || '',
+      });
+    }
+    const upstream = got.res;
     const ct = upstream.headers.get('content-type') || 'image/png';
     res.set('Content-Type', ct);
     res.set('Cache-Control', 'private, max-age=600');
@@ -171,10 +235,20 @@ router.get('/:id/files', async (req, res) => {
         data: { files: [] },
       });
     }
-    const upstream = await fetch(url, { redirect: 'follow' });
-    if (!upstream.ok) {
-      return res.json({ ok: false, message: `模型包下载失败：CDN 返回 ${upstream.status}`, data: { files: [] } });
+    const got = await fetchSigned(url, id, '模型包下载');
+    if (!got.res.ok) {
+      const err = got.err || (await readCdnError(got.res));
+      const msg = cdnFailMessage('模型包下载', got.res.status, err);
+      log.error('模型库', `id=${id} ${msg}`, { cdnCode: err.code, raw: err.raw });
+      return res.json({
+        ok: false,
+        message: msg,
+        code: err.code || 'CDN_ERROR',
+        hint: err.reason || '',
+        data: { files: [] },
+      });
     }
+    const upstream = got.res;
     const declared = Number(upstream.headers.get('content-length') || 0);
     if (declared && declared > MAX_ZIP_BYTES) {
       return res.json({
@@ -234,8 +308,17 @@ router.get('/:id/package', async (req, res) => {
     const d = await fetchDetail(req.params.id);
     const url = d?.url;
     if (!url) return res.status(404).json({ ok: false, message: '该模型暂无下载链接' });
-    const upstream = await fetch(url, { redirect: 'follow' });
-    if (!upstream.ok) return res.status(502).json({ ok: false, message: `模型包 CDN 返回 ${upstream.status}` });
+    const got = await fetchSigned(url, req.params.id, '模型包下载');
+    if (!got.res.ok) {
+      const err = got.err || (await readCdnError(got.res));
+      return res.status(502).json({
+        ok: false,
+        message: cdnFailMessage('模型包下载', got.res.status, err),
+        code: err.code || 'CDN_ERROR',
+        hint: err.reason || '',
+      });
+    }
+    const upstream = got.res;
     const name = String(req.query?.name || d?.name || req.params.id).replace(/\.(zip|las|laz)$/i, '');
     const filename = `${name}.zip`;
     const ascii = filename.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '');
@@ -245,6 +328,36 @@ router.get('/:id/package', async (req, res) => {
   } catch (e) {
     log.error('模型库', `模型包下载失败：${e.message}`);
     res.status(502).json({ ok: false, message: `模型包下载失败：${e.message}` });
+  }
+});
+
+/**
+ * 可用性预检：用 Range 只取 1 字节，不下载整包就能判断源文件还在不在。
+ * 前端可在点「三维预览 / 下载」前先打一次，避免等半天才弹 404。
+ */
+router.get('/:id/check', async (req, res) => {
+  const id = String(req.params.id);
+  try {
+    const d = await fetchDetail(id, true);
+    const url = d?.url;
+    if (!url) {
+      return res.json({ ok: true, available: false, message: '司空 2 暂未提供该模型的下载链接（可能仍在压缩中）' });
+    }
+    const r = await fetch(url, { headers: { Range: 'bytes=0-0' }, redirect: 'follow' });
+    if (r.ok || r.status === 206) {
+      const total = Number((r.headers.get('content-range') || '').split('/')[1] || r.headers.get('content-length') || 0);
+      return res.json({ ok: true, available: true, size: total, overLimit: total > MAX_ZIP_BYTES });
+    }
+    const err = await readCdnError(r);
+    return res.json({
+      ok: true,
+      available: false,
+      status: r.status,
+      code: err.code || 'CDN_ERROR',
+      message: `源文件不可用（${err.code || r.status}）：${err.reason || err.msg || '未知原因'}`,
+    });
+  } catch (e) {
+    res.json({ ok: false, available: false, message: `预检失败：${e.message}` });
   }
 });
 
