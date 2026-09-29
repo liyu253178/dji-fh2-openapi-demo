@@ -92,7 +92,9 @@ export function parseDjiMeta(buf) {
     // ZoomCamera=变焦 / WideCamera=广角 / IRCamera=红外
     lensType: (() => {
       const v = attr(xmp, 'drone-dji:ImageSource');
-      return { ZoomCamera: 'zoom', WideCamera: 'wide', IRCamera: 'ir' }[v] || v || null;
+      // 归一为库表约定的两值：infrared | visible
+      // （实测 M4TD 的 ImageSource 取值为 InfraredCamera / ZoomCamera / WideCamera）
+      return { InfraredCamera: 'infrared', IRCamera: 'infrared', ZoomCamera: 'visible', WideCamera: 'visible' }[v] || null;
     })(),
 
     // ---- 时间（第一层关联：任务关联）----

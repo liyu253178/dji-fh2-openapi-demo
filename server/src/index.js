@@ -10,6 +10,10 @@ import { bus, log } from './logger.js';
 import { subscribe } from './events.js';
 import { session } from './djiClient.js';
 import * as store from './modules/system/services/store.js';
+import { migrate } from './db/migrate.js';
+import { seed } from './db/seed.js';
+import { closeDb, health as dbHealth, tableCounts } from './db/index.js';
+import { dictReady } from './db/seed.js';
 import sessionRoutes from './routes/session.js';
 import deviceRoutes from './routes/device.js';
 import liveRoutes from './routes/live.js';
@@ -19,6 +23,7 @@ import takeoffRoutes from './routes/takeoff.js';
 import adminRoutes from './routes/admin.js';
 import opsRoutes from './routes/ops.js';
 import modelRoutes from './routes/model.js';
+import assetRoutes from './routes/asset.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
@@ -26,6 +31,12 @@ const PORT = Number(process.env.PORT) || 8787;
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// 初始化数据库（一期成果资产 / 工单闭环的数据底座）
+migrate();
+seed({ withSampleRecipients: process.env.SEED_SAMPLE_RECIPIENTS !== '0' });
+const dict = dictReady();
+log.info('DB', `字典就绪：${dict.issueTypes} 个问题类型、${dict.recipients} 个派发对象`);
 
 // 初始化会话
 store.load();
@@ -44,6 +55,7 @@ app.use('/api/takeoff', takeoffRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/ops', opsRoutes);
 app.use('/api/model', modelRoutes);
+app.use('/api/asset', assetRoutes);
 
 /** 领域事件 SSE（设备上下线等） */
 app.get('/api/events/stream', (req, res) => {
@@ -72,6 +84,24 @@ app.get('/api/logs/stream', (req, res) => {
 });
 
 app.get('/api/ping', (req, res) => res.json({ ok: true, ts: Date.now() }));
+
+/** 数据库状态（一期系统状态页用；工单与成果资产的数据底座） */
+app.get('/api/admin/db-status', (req, res) => {
+  res.json({ code: 0, message: '', data: { health: dbHealth(), counts: tableCounts() } });
+});
+
+/** 优雅退出：checkpoint WAL，确保数据落盘 */
+function shutdown(signal) {
+  log.info('BOOT', `收到 ${signal}，正在关闭…`);
+  try {
+    closeDb();
+  } catch (e) {
+    log.error('BOOT', `关闭数据库失败: ${e.message}`);
+  }
+  process.exit(0);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 /**
  * 单端口托管：若前端已构建（web/dist），则直接由 BFF 提供静态资源与 SPA 回退，

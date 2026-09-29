@@ -7,13 +7,17 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "node src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test:db": "node scripts/test-db.mjs",
+    "db:reset": "node -e \"import('node:fs').then(fs=>{['data/duav.db','data/duav.db-wal','data/duav.db-shm'].forEach(f=>fs.existsSync(f)&&fs.unlinkSync(f));console.log('数据库已重置')})\""
   },
   "dependencies": {
     "ali-oss": "^6.21.0",
+    "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "fflate": "^0.8.3",
-    "multer": "^2.4.0"
+    "multer": "^2.4.0",
+    "sharp": "^0.35.5"
   }
 }
