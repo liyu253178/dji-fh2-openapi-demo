@@ -341,9 +341,9 @@ export const ticketRepo = {
     if (!type) return { ok: false, message: `问题类型 ${p.issueType} 不在字典中` };
 
     // 缺少必填的空间/属性时拒绝，避免派出无法核查的工单
+    // ⚠️ 位置描述不设门槛：已改为选填（具体地址按 GPS 自动带出）；
+    //    估算面积也不设门槛：无人机照片 GSD/相对高度不准，面积不可信、不作派单条件
     if (!p.adminRegion) return { ok: false, message: '请先填写行政区' };
-    if (!p.positionDesc) return { ok: false, message: '请先填写位置描述' };
-    if (type.require_area && !p.areaM2) return { ok: false, message: `「${type.name}」必须填写估算面积` };
     if (patchImageRepo.countByPatch(patchId) === 0) {
       return { ok: false, message: '该图斑未关联任何影像，不能派发（无证据不可派单）' };
     }
