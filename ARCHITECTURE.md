@@ -1,7 +1,8 @@
-# 大疆司空 2 OpenAPI 无人机管理与控制平台 · 架构设计
+# DUAV · 无人机巡检监管平台 · 架构设计
 
-> 文档版本：v1.0 ｜ 对接标准：全新司空 2 OpenAPI V1.0（https://fh2-api.apifox.cn/llms.txt）
+> 文档版本：v1.1 ｜ 对接标准：全新司空 2 OpenAPI V1.0（https://fh2-api.apifox.cn/llms.txt）
 > 接入点：公有云国内 `https://es-flight-api-cn.djigate.com`，所有业务路径前缀 `/openapi/v0.1`
+> 品牌：DUAV（底层对接大疆司空 2 / DJI FlightHub 2）
 
 ---
 
@@ -149,24 +150,45 @@ sequenceDiagram
 ## 四、目录结构
 
 ```
-dome/
+duav/
 ├── ARCHITECTURE.md          ← 本文件
-├── README.md                ← 启动与排障手册
+├── README.md                ← 项目介绍与启动排障手册
 ├── docs/                    ← 设计文档（api/ 已随脱敏排除，请查官方 Apifox）
-├── server/                  ← BFF 代理服务 :8787
+│   ├── ARCHITECTURE-v2.md   政务版信息架构与后端分层
+│   └── 示例库对照与改进建议.md
+├── server/                  ← BFF 服务 :8787
+│   ├── src/
+│   │   ├── index.js         应用入口、路由挂载、SSE
+│   │   ├── djiClient.js     司空 2 统一网关客户端（鉴权/超时/safeParse）
+│   │   ├── logger.js        日志环形缓冲 + SSE 推送
+│   │   ├── store.js         TK 列表持久化（server/data/tokens.json）
+│   │   ├── routes/          session/device/live/wayline/task/model/admin/ops
+│   │   ├── services/        领域服务 telemetry/device/live/stats/scheduler
+│   │   └── modules/
+│   │       ├── asset/       成果资产层（djiXmp.js 影像元数据解析）
+│   │       ├── drone/       无人机业务（控制权/直播/任务/遥测）
+│   │       └── system/
+│   └── scripts/             probe-*.mjs 接口探针（先 probe 再写业务）
+├── web/                     ← 前端 SPA :5173
 │   └── src/
-│       ├── index.js         应用入口、路由挂载、SSE
-│       ├── djiClient.js     司空2 统一网关客户端
-│       ├── logger.js        日志环形缓冲 + SSE 推送
-│       ├── store.js         TK 列表持久化（server/data/tokens.json）
-│       └── routes/          session/device/live/wayline/task/admin
-└── web/                     ← 前端 SPA :5173
-    └── src/
-        ├── api/dji.js       统一 HTTP + 错误归一化
-        ├── stores/session.js 全局会话（TK/项目/设备）
-        ├── components/      BaseMap / LivePlayer / LogConsole / ...
-        └── views/           Cockpit / Dashboard / Wayline / Task / Device / Admin
+│       ├── api/dji.js       统一 HTTP + 错误归一化
+│       ├── stores/session.js 全局会话（TK/项目/设备）
+│       ├── components/      BaseMap / LivePlayer / LogConsole / ModelViewer
+│       └── views/           Cockpit / Dashboard / Wayline / Device / Model / Admin
+├── skills/                  ← 配套开发经验 Skill
+├── tools/                   ← sanitize.mjs / check-secrets.mjs
+└── tests/                   ← 回归测试
 ```
+
+### 新增：成果资产层（modules/asset）
+
+| 文件 | 职责 |
+|---|---|
+| `djiXmp.js` | 解析 DJI 影像 XMP 的 `drone-dji` 私有命名空间，提取 GPS / RTK 质量 / 高度 / 姿态角 / 设备 SN / 镜头类型 / 航线 ID；并由高度 + FOV + 姿态估算地面覆盖范围（footprint） |
+
+> ⚠️ **实测结论**：DJI 机型（M4TD）**不写标准 EXIF GPS IFD（0x8825）**，GPS 全部在 XMP 中。通用 exif 库返回 `null`，必须解析 XMP。实测 14/14 张 RTK 级坐标提取成功，坐标系 WGS84（与 CGCS2000 差距 <1m，无需转换）。
+>
+> 文件名后缀规律：`_T` = 红外（InfraredCamera）、`_V` = 可见光变焦（ZoomCamera），同架次成对存在（时间戳差 1 秒），是多模态检测的天然配对基础。
 
 ---
 
