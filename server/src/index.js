@@ -24,6 +24,8 @@ import adminRoutes from './routes/admin.js';
 import opsRoutes from './routes/ops.js';
 import modelRoutes from './routes/model.js';
 import assetRoutes from './routes/asset.js';
+import reviewRoutes from './routes/review.js';
+import ticketRoutes from './routes/ticket.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
@@ -56,6 +58,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/ops', opsRoutes);
 app.use('/api/model', modelRoutes);
 app.use('/api/asset', assetRoutes);
+app.use('/api/review', reviewRoutes);
+app.use('/api/tickets', ticketRoutes);
 
 /** 领域事件 SSE（设备上下线等） */
 app.get('/api/events/stream', (req, res) => {

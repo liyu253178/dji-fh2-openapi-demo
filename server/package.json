@@ -9,6 +9,10 @@
     "dev": "node src/index.js",
     "start": "node src/index.js",
     "test:db": "node scripts/test-db.mjs",
+    "test:flow": "node scripts/test-flow.mjs",
+    "test:http": "node scripts/verify-http.mjs",
+    "test:asset": "node scripts/verify-asset.mjs",
+    "assert:asset": "node scripts/assert-asset.mjs",
     "db:reset": "node -e \"import('node:fs').then(fs=>{['data/duav.db','data/duav.db-wal','data/duav.db-shm'].forEach(f=>fs.existsSync(f)&&fs.unlinkSync(f));console.log('数据库已重置')})\""
   },
   "dependencies": {
