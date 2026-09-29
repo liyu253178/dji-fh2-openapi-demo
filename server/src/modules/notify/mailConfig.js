@@ -4,17 +4,20 @@
  * ⚠️ 安全要求：授权码只从环境变量读，绝不写入源码、配置文件、数据库或日志。
  *
  * 环境变量：
- *   SMTP_HOST     默认 smtp.qq.com
- *   SMTP_PORT     默认 465（SSL 直连）
- *   SMTP_SECURE   默认 1（true=SSL/TLS；0=STARTTLS，一般用 587 端口）
- *   SMTP_USER     完整邮箱地址，如 your@qq.com
+ *   SMTP_USER     **完整邮箱地址**，如 your@163.com（必需，缺失则邮件功能不可用）
  *   SMTP_PASS     授权码（非登录密码！）
- *   SMTP_FROM     发件人地址，须与 SMTP_USER 一致否则可能被拒
+ *   SMTP_HOST     可选，按邮箱后缀自动推断，也可显式指定
+ *   SMTP_PORT     可选，默认 465
+ *   SMTP_SECURE   可选，默认 1（SSL）；用 587 STARTTLS 时设为 0
  *   ORG_NAME      落款单位名
  *   ORG_CONTACT   落款联系方式
- *   PLATFORM_URL  平台访问地址（邮件里的深链接）
+ *   PLATFORM_URL  平台访问地址（邮件深链接，注意不带 #）
  *
- * 163 邮箱用户把 SMTP_HOST 换成 smtp.163.com 即可，其余相同。
+ * 常见邮箱的 SMTP 主机：
+ *   @163.com→ smtp.163.com:465     @126.com       → smtp.126.com:465
+ *   @qq.com  → smtp.qq.com:465     @foxmail.com   → smtp.qq.com:465
+ *   @gmail.com → smtp.gmail.com:465（需应用专用密码 + 允许低安全应用）
+ *   企业腾讯邮 → smtp.exmail.qq.com:465
  */
 
 import fs from 'node:fs';
@@ -23,18 +26,40 @@ import { DATA_DIR } from '../../db/config.js';
 
 const CONFIG_FILE = path.join(DATA_DIR, 'mail.json');
 
-/** 从环境变量读取配置（推荐方式） */
+/** 按邮箱后缀推断 SMTP 主机 */
+export function guessHost(user) {
+  const domain = String(user || '').split('@')[1]?.toLowerCase() || '';
+  const map = {
+    '163.com': 'smtp.163.com',
+    '126.com': 'smtp.126.com',
+    'yeah.net': 'smtp.163.com',
+    'vip.163.com': 'smtp.163.com',
+    'qq.com': 'smtp.qq.com',
+    'foxmail.com': 'smtp.qq.com',
+    'vip.qq.com': 'smtp.qq.com',
+    'exmail.qq.com': 'smtp.exmail.qq.com',
+    'gmail.com': 'smtp.gmail.com',
+  };
+  return map[domain] || 'smtp.163.com';
+}
+
+/** 从环境变量读取配置 */
 function fromEnv() {
+  const user = process.env.SMTP_USER || '';
   return {
-    host: process.env.SMTP_HOST || 'smtp.qq.com',
+    host: process.env.SMTP_HOST || guessHost(user),
     port: Number(process.env.SMTP_PORT || 465),
-    secure: process.env.SMTP_SECURE === undefined ? true : process.env.SMTP_SECURE !== '0' && process.env.SMTP_SECURE !== 'false',
-    user: process.env.SMTP_USER || '',
+    secure:
+      process.env.SMTP_SECURE === undefined
+        ? true
+        : process.env.SMTP_SECURE !== '0' && process.env.SMTP_SECURE !== 'false',
+    user,
     pass: process.env.SMTP_PASS || '',
-    from: process.env.SMTP_FROM || process.env.SMTP_USER || '',
+    from: process.env.SMTP_FROM || user,
     orgName: process.env.ORG_NAME || '低空智能监管平台',
     orgContact: process.env.ORG_CONTACT || '',
-    platformUrl: process.env.PLATFORM_URL || 'http://localhost:5173',
+    // 默认用 BFF 单端口（8787 同时托管 API 与前端静态资源）
+    platformUrl: process.env.PLATFORM_URL || 'http://localhost:8787',
   };
 }
 
