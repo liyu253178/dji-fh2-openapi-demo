@@ -91,7 +91,13 @@ body {
   margin-bottom: 8px;
 }
 .panel-row:last-child { margin-bottom: 0; }
-.panel-row .name { font-size: var(--fs-md); font-weight: 600; flex: 1; min-width: 0; }
+/* 名称必须自带截断：只有 min-width:0 的话，超长文本会以 overflow:visible
+   画到相邻元素上面（司空航线名如 FlyToTask_8UUXN2B00A00RV 实测溢出 28px，
+   直接压住右侧状态标签）。overflow:hidden 是让 ellipsis 生效的前提。 */
+.panel-row .name {
+  font-size: var(--fs-md); font-weight: 600; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .panel-row .code { font-size: var(--fs-xs); color: var(--c-text-2); font-family: 'SF Mono', Menlo, monospace; }
 .panel-row .meta { font-size: var(--fs-xs); color: var(--c-text-2); margin-top: 3px; }
 .progress { height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.1); overflow: hidden; margin-top: 7px; }

@@ -104,6 +104,49 @@ export const syncRepo = {
     return get('SELECT * FROM flight_task WHERE uuid = @uuid', { uuid });
   },
 
+  /**
+   * 删除架次及其名下的影像记录（不含磁盘文件清理，磁盘层面由调用方决定）。
+   * 用于「自动剔除无图片航线」：判定为无影像时不该留一条空壳架次污染列表。
+   */
+  deleteTask(uuid) {
+    run('DELETE FROM asset_image WHERE task_uuid = @uuid', { uuid });
+    const info = run('DELETE FROM flight_task WHERE uuid = @uuid', { uuid });
+    return info.changes || 0;
+  },
+
+  /**
+   * 某项目下「历史同步出过架次」的机场清单（按最近作业时间倒序）。
+   * 同步弹窗的机场下拉数据源 = 当前在线设备 ∪ 这里，否则「项目曾有数据但机场
+   * 当前不在线/不在该项目」时下拉为空且必选，用户会被卡死（实测复现）。
+   */
+  knownDocks(projectUuid) {
+    return all(
+      `SELECT dock_sn AS dockSn, COUNT(*) AS tasks, MAX(begin_at) AS lastAt
+       FROM flight_task
+       WHERE project_uuid = @projectUuid AND dock_sn IS NOT NULL AND dock_sn != ''
+       GROUP BY dock_sn
+       ORDER BY lastAt DESC`,
+      { projectUuid }
+    );
+  },
+
+  /**
+   * 批量删除「没有任何照片」的架次记录（同步选项只管新数据，存量靠这里清）。返回删除行数。
+   *
+   * 判定口径与同步时的「自动剔除无图片航线」保持一致：名下没有 file_type='image'
+   * 的记录即为无影像架次。只挂了 PPK 等辅助文件的同样算——实测某项目 49 个架次里
+   * 47 个是 FlyToTask 定点飞行 / 纯辅助下载，一条照片都没有。
+   */
+  deleteEmptyTasks(projectUuid) {
+    const cond = `NOT EXISTS (
+       SELECT 1 FROM asset_image WHERE asset_image.task_uuid = flight_task.uuid
+         AND asset_image.file_type = 'image')`;
+    const info = projectUuid
+      ? run(`DELETE FROM flight_task WHERE project_uuid = @projectUuid AND ${cond}`, { projectUuid })
+      : run(`DELETE FROM flight_task WHERE ${cond}`);
+    return info.changes || 0;
+  },
+
   markTaskSync(uuid, { status, error, mediaTotal, flightLineId }) {
     const sets = { sync_status: status, sync_error: error ?? null, updated_at: now() };
     if (mediaTotal !== undefined) sets.media_total = mediaTotal;
@@ -201,6 +244,12 @@ export const assetRepo = {
       taskUuid: img.taskUuid,
       mediaUuid: img.mediaUuid,
     });
+    /**
+     * ⚠️ 实测缺陷：PPK 等非影像文件没有镜头概念，早期统一兜底成 'visible'，
+     *    污染了两处 —— ①「仅可见光」筛选无法排除 PPK；② 架次统计的 visible 计数虚高
+     *    （该架次 63 张真图被算成 67）。这里只对真实影像兜底。
+     */
+    const fileType = img.fileType ?? 'image';
     const rec = {
       taskUuid: img.taskUuid,
       mediaUuid: img.mediaUuid,
@@ -212,8 +261,8 @@ export const assetRepo = {
       filePath: img.filePath ?? null,
       thumbPath: img.thumbPath ?? null,
       mailPath: img.mailPath ?? null,
-      fileType: img.fileType ?? 'image',
-      lensType: img.lensType ?? 'visible',
+      fileType,
+      lensType: img.lensType ?? (fileType === 'image' ? 'visible' : null),
       imageSource: img.imageSource ?? null,
       lat: img.lat ?? null,
       lon: img.lon ?? null,
@@ -359,10 +408,22 @@ export const assetRepo = {
     };
   },
 
-  /** 某架次的影像列表（审核工作台缩略图数据源） */
+  /**
+   * 某架次的影像列表（审核工作台缩略图数据源）
+   *
+   * ⚠️ 排序坑（实测缺陷）：PPK 等非影像文件没有 shot_at，而 SQLite 的
+   *    `ORDER BY shot_at ASC` 会把 NULL 排在**最前面**。于是工作台默认选中的
+   *    images[0] 恰好是一条没有原图、没有 XMP 的 PPK 记录 ——
+   *    表现为「大图全黑 + 右侧属性全为 —」，看起来像影像全部同步失败。
+   *    这里强制三段排序：真实影像优先 → 有拍摄时间优先 → 文件名自然序。
+   */
   listByTask(taskUuid) {
     return all(
-      `SELECT * FROM asset_image WHERE task_uuid = @taskUuid ORDER BY shot_at ASC, file_name ASC`,
+      `SELECT id FROM asset_image WHERE task_uuid = @taskUuid
+       ORDER BY (file_type IS NULL OR file_type <> 'image'),
+                (shot_at IS NULL),
+                shot_at ASC,
+                file_name ASC`,
       { taskUuid }
     ).map((r) => assetRepo.findById(r.id));
   },

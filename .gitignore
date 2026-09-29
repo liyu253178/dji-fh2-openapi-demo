@@ -9,6 +9,9 @@ web/dist/
 server/data/
 *.log
 
+# 自测脚本的隔离数据目录（test-db / test-flow / test-mail / verify-asset 专用）
+server/data-test/
+
 # 官方接口文档副本（第三方文档，且含真实 Token 示例）
 docs/api/
 

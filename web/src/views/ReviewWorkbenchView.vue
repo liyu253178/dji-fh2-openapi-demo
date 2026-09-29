@@ -17,7 +17,7 @@
       </el-select>
       <el-checkbox v-model="pairMode" size="small">成对比对</el-checkbox>
       <div class="prog">
-        已标注 <strong>{{ patchedCount }}</strong> / {{ images.length }}
+        已标注 <strong>{{ patchedCount }}</strong> / {{ images.length - auxCount }}
       </div>
     </div>
 
@@ -41,7 +41,10 @@
     <div v-else class="cols">
       <!-- 左：缩略图 -->
       <aside class="left">
-        <div class="left-hd">影像 {{ images.length }}<span class="dim"> / 已标 {{ patchedCount }}</span></div>
+        <div class="left-hd">
+          影像 {{ images.length }}<span class="dim"> / 已标 {{ patchedCount }}</span>
+          <span v-if="auxCount" class="dim aux">（含 {{ auxCount }} 个非影像文件）</span>
+        </div>
         <div class="thumbs">
           <ImageThumb
             v-for="(im, i) in visibleImages"
@@ -63,7 +66,14 @@
 
       <!-- 中：单图 -->
       <section class="mid">
-        <div v-if="pairMode && pairImage" class="pair">
+        <div v-if="!canPreview" class="no-prev">
+          <p class="np-t">该记录不是航拍影像，无法预览</p>
+          <p class="np-d">
+            {{ current.fileName || '—' }}<span v-if="current.fileType"> · 类型 {{ current.fileType }}</span>
+            —— 司空 media 列表夹带的 PPK 等后处理辅助文件，本身不含图像与 XMP 元数据。
+          </p>
+        </div>
+        <div v-else-if="pairMode && pairImage" class="pair">
           <div class="cell">
             <span class="tag">可见光 · 主图</span>
             <ImageViewer
@@ -95,13 +105,13 @@
             <span class="pg">{{ idx + 1 }} / {{ visibleImages.length }}</span>
             <el-button size="small" text :disabled="idx >= visibleImages.length - 1" @click="step(1)">›</el-button>
             <el-tooltip content="下载原图">
-              <el-button size="small" text @click="download">⤓</el-button>
+              <el-button size="small" text :disabled="!canPreview" @click="download">⤓</el-button>
             </el-tooltip>
           </div>
           <div class="cover" v-if="cover">
             覆盖约 {{ cover.w }} × {{ cover.h }} m
           </div>
-          <el-button size="small" type="primary" :disabled="!draw" @click="openForm">
+          <el-button size="small" type="primary" :disabled="!draw || !canPreview" @click="openForm">
             框选中
           </el-button>
         </div>
@@ -157,7 +167,14 @@
           <p v-else class="none">尚未标注</p>
         </div>
 
-        <el-button type="primary" class="save" @click="openForm">保存为图斑</el-button>
+        <el-button
+          type="primary"
+          class="save"
+          :disabled="!canPreview && !selected.length"
+          @click="openForm"
+        >
+          保存为图斑
+        </el-button>
       </aside>
     </div>
 
@@ -227,6 +244,10 @@ const cover = computed(() => {
   const f = current.value.footprint;
   return f ? { w: Math.round(f.widthM), h: Math.round(f.heightM) } : null;
 });
+/** 当前选中项是否有可预览的原图（PPK 等辅助文件没有） */
+const canPreview = computed(() => !!current.value?.hasOriginal);
+/** 非影像辅助文件数量（PPK 等），列表里排在最后并单独标注 */
+const auxCount = computed(() => images.value.filter((x) => !x.hasOriginal).length);
 
 function originalIndex(im) {
   return images.value.findIndex((x) => x.id === im.id);
@@ -251,7 +272,12 @@ async function load() {
       return;
     }
     images.value = r.data.list || [];
-    curId.value = images.value[0]?.id || 0;
+    /**
+     * ⚠️ 实测缺陷：司空 media 列表会夹带 PPK 等非影像辅助文件（hasOriginal=false，
+     *    无缩略图、无 XMP）。此前无条件选中 images[0]，一旦它是这类记录，
+     *    工作台就是「大图全黑 + 右侧属性全为 —」。这里改为优先选中第一张可预览的真实影像。
+     */
+    curId.value = (images.value.find((x) => x.hasOriginal) || images.value[0])?.id || 0;
     if (t.ok) types.value = t.data || [];
     // 架次元信息（用于顶栏展示）
     const list = await assetApi.tasks({ projectUuid: projectUuid.value, pageSize: 200 });
@@ -266,7 +292,12 @@ async function load() {
 }
 
 async function loadPatches() {
-  const r = await reviewApi.queue({ status: 'draft', pageSize: 200 });
+  /**
+   * ⚠️ 不能只查 draft（实测缺陷）：图斑一旦生成工单，状态就变成 ticketed，
+   *    此前会从右栏「已有图斑」里凭空消失，而右上角「已标注 N」仍显示 7，
+   *    两处自相矛盾，看起来像标注丢了。这里按架次取**全部状态**的图斑。
+   */
+  const r = await reviewApi.queue({ pageSize: 200 });
   if (r.ok) patches.value = (r.data.list || []).filter((p) => p.taskUuid === taskUuid.value);
 }
 
@@ -336,8 +367,8 @@ async function onSaved({ withTicket }) {
   draw.value = null;
   await loadPatches();
   if (withTicket) {
-    // 生成工单：取刚建的图斑
-    const r = await reviewApi.queue({ status: 'draft', pageSize: 1 });
+    // 生成工单：取刚建的图斑（不筛状态，避免它已被置为 ticketed 时取不到）
+    const r = await reviewApi.queue({ pageSize: 1 });
     const p = r.ok ? r.data.list?.[0] : null;
     if (p) {
       const t = await ticketApi.create({ patchId: p.patchId });
@@ -425,6 +456,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
   font-size: var(--fs-sm);
   color: var(--c-text-1);
   border-bottom: 1px solid var(--c-line);
+  line-height: 1.5;
+}
+/* 辅助文件说明单独起一行，避免在 200px 窄栏里折成半截 */
+.left-hd .aux {
+  display: block;
 }
 .thumbs {
   flex: 1;
@@ -432,6 +468,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
   padding: var(--sp-2);
   display: grid;
   grid-template-columns: 1fr 1fr;
+  /**
+   * ⚠️ 必须有这一行（实测缺陷）：
+   *    容器高度是确定的（flex: 1 → 792px），此时默认的 `grid-auto-rows: auto`
+   *    会被浏览器按「容器高 ÷ 行数」均分轨道 —— 34 行各分到 23px，
+   *    而缩略图本身有 67px 高，于是 67 张图层层重叠，每张只露出顶部一条，
+   *    视觉上就是满屏"竖条纹"。改成 max-content 后行高按内容撑开，
+   *    总高 2418px 正常滚动（行距 70.8px = 67 + gap）。
+   */
+  grid-auto-rows: max-content;
   gap: var(--sp-1);
   align-content: start;
 }
@@ -457,6 +502,34 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 .pair {
   flex: 1;
   min-height: 0;
+}
+/* 非影像文件（PPK 等）的占位：代替全黑的大图区，明确说明为什么没有画面 */
+.no-prev {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  text-align: center;
+  background: var(--c-bg-1);
+  border: 1px dashed var(--c-line);
+  border-radius: var(--r-md);
+}
+.no-prev .np-t {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--c-text-1);
+}
+.no-prev .np-d {
+  margin: 0;
+  max-width: 460px;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  color: var(--c-text-2);
 }
 .pair {
   display: grid;

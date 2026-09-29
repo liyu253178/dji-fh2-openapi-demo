@@ -65,17 +65,40 @@
       <!-- 侧栏导航 -->
       <aside class="sidebar">
         <nav>
-          <div
-            v-for="item in nav"
-            :key="item.path"
-            class="nav-item"
-            :class="{ active: route.path === item.path }"
-            @click="router.push(item.path)"
-          >
-            <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.title }}</span>
-            <span v-if="item.badge && badgeValue(item.badge)" class="nav-badge">{{ badgeValue(item.badge) }}</span>
-          </div>
+          <template v-for="item in nav" :key="item.path || item.title">
+            <!-- 可折叠分组：父项只负责展开/收起，不跳转 -->
+            <div v-if="item.children" class="nav-item group" :class="{ open: isOpen(item), 'group-on': groupActive(item) }" @click="toggle(item)">
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.title }}</span>
+              <span v-if="groupBadge(item)" class="nav-badge">{{ groupBadge(item) }}</span>
+              <el-icon class="caret" :class="{ rot: isOpen(item) }"><ArrowRight /></el-icon>
+            </div>
+            <template v-if="item.children && isOpen(item)">
+              <div
+                v-for="c in item.children"
+                :key="c.path"
+                class="nav-item sub"
+                :class="{ active: route.path === c.path }"
+                @click="router.push(c.path)"
+              >
+                <span class="sub-dot"></span>
+                <span class="sub-t">{{ c.title }}</span>
+                <span v-if="c.badge && badgeValue(c.badge)" class="nav-badge">{{ badgeValue(c.badge) }}</span>
+              </div>
+            </template>
+
+            <!-- 普通一级项 -->
+            <div
+              v-else-if="!item.children"
+              class="nav-item"
+              :class="{ active: route.path === item.path }"
+              @click="router.push(item.path)"
+            >
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.title }}</span>
+              <span v-if="item.badge && badgeValue(item.badge)" class="nav-badge">{{ badgeValue(item.badge) }}</span>
+            </div>
+          </template>
         </nav>
         <div class="sidebar-foot">
           <span class="dot" :style="{ background: store.connected ? 'var(--c-ok)' : 'var(--c-err)' }"></span>
@@ -116,7 +139,10 @@ const store = useSessionStore();
 /**
  * 信息架构导航
  * ⚠️ 这里是**硬编码数组，不派生自 router/index.js**——
- *    新增页面时必须同时改router/index.js 与本数组，只改一处菜单不会出现。
+ *    新增页面时必须同时改 router/index.js 与本数组，只改一处菜单不会出现。
+ *
+ * children 表示可折叠分组：「发现—核查—派发—归档」这一整条业务链路平铺在侧栏时，
+ * 一级项一度达到 14 个，主次不分、找入口全靠扫读，所以收敛成「工单管理」一个栏目。
  */
 const nav = [
   { path: '/dashboard', title: '首页大屏', icon: 'Monitor', badge: 'online' },
@@ -124,18 +150,45 @@ const nav = [
   { path: '/wayline', title: '航线管理', icon: 'MapLocation' },
   { path: '/devices', title: '设备管理', icon: 'Box' },
   { path: '/models', title: '模型库', icon: 'Collection' },
-  // ---------- 一期新增 ----------
-  { path: '/assets', title: '巡检成果', icon: 'FolderOpened' },
-  { path: '/review', title: '影像审核', icon: 'View' },
-  { path: '/tickets', title: '工单管理', icon: 'Tickets' },
-  { path: '/stats', title: '台账统计', icon: 'DataAnalysis' },
-  // ---------- 系统（一期新增 4 项紧随「其他设置」）----------
+  {
+    title: '工单管理',
+    icon: 'Tickets',
+    children: [
+      { path: '/assets', title: '巡检成果', icon: 'FolderOpened' },
+      { path: '/review', title: '影像审核', icon: 'View' },
+      { path: '/tickets', title: '工单列表', icon: 'Tickets' },
+      { path: '/stats', title: '台账统计', icon: 'DataAnalysis' },
+      { path: '/admin/dict', title: '问题字典', icon: 'Notebook' },
+      { path: '/admin/recipients', title: '派发对象', icon: 'User' },
+      { path: '/admin/mail', title: '邮件配置', icon: 'Message' },
+    ],
+  },
   { path: '/admin', title: '其他设置', icon: 'Setting' },
-  { path: '/admin/mail', title: '邮件配置', icon: 'Message' },
-  { path: '/admin/dict', title: '问题字典', icon: 'Notebook' },
-  { path: '/admin/recipients', title: '派发对象', icon: 'User' },
   { path: '/admin/status', title: '系统状态', icon: 'Monitor' },
 ];
+
+/** 分组展开态：默认收起，当前路由落在组内时自动展开 */
+const openGroups = ref(new Set());
+function groupActive(item) {
+  return (item.children || []).some((c) => c.path && route.path.startsWith(c.path));
+}
+function hasOpened(item) {
+  return openGroups.value.has(item.title);
+}
+function isOpen(item) {
+  return hasOpened(item) || groupActive(item);
+}
+function toggle(item) {
+  const s = new Set(openGroups.value);
+  if (isOpen(item)) s.delete(item.title);
+  else s.add(item.title);
+  openGroups.value = s;
+}
+/** 分组上的角标：取子项角标之和（暂无数据的保持 0 不显示） */
+function groupBadge(item) {
+  const n = (item.children || []).reduce((acc, c) => acc + (c.badge ? Number(badgeValue(c.badge)) || 0 : 0), 0);
+  return n > 0 ? n : 0;
+}
 
 const pageTitle = computed(() => route.meta?.title || 'DUAV · 无人机巡检监管平台');
 const pageSubtitle = computed(() => route.meta?.subtitle || '');
@@ -247,6 +300,27 @@ onUnmounted(() => timer && clearInterval(timer));
   width: 3px; height: 16px; border-radius: 0 2px 2px 0; background: var(--c-brand);
 }
 .nav-item .el-icon { font-size: 15px; }
+/* ---------- 可折叠分组 ---------- */
+.nav-item.group { color: var(--c-text-1); }
+.nav-item.group .caret {
+  margin-left: auto; font-size: 12px; opacity: .6; transition: transform .18s;
+}
+.nav-item.group .caret.rot { transform: rotate(90deg); }
+/* 组内有选中子项时，父项标题也要亮起来（但不用选中态的深色底） */
+.nav-item.group.group-on { color: var(--c-brand); }
+.nav-item.group.group-on .el-icon { color: var(--c-brand); }
+.nav-item.sub {
+  padding-left: 30px; font-size: var(--fs-sm); color: var(--c-text-2);
+  gap: 8px; margin-bottom: 1px;
+}
+.nav-item.sub:hover { color: var(--c-text-0); }
+.nav-item.sub.active { color: var(--c-brand); background: var(--c-brand-dim); }
+.nav-item.sub .sub-dot {
+  width: 4px; height: 4px; border-radius: 50%; background: currentColor;
+  opacity: .45; flex: 0 0 auto;
+}
+.nav-item.sub.active .sub-dot { opacity: 1; }
+.nav-item.sub .sub-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-badge {
   margin-left: auto; font-size: var(--fs-xs); background: var(--c-brand);
   color: #fff; border-radius: 9px; padding: 0 6px; line-height: 16px;

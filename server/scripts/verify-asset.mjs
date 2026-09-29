@@ -15,16 +15,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_FILE = path.join(__dirname, '..', 'data', 'duav.db');
+/**
+ * ⚠️ 安全约束：本脚本会清库并删除 assets/preview/mail-attach 三个目录。
+ *    历史版本直接对 server/data 操作 —— 跑一次就会把手工同步来的
+ *    真实影像、缩略图、邮件缩图全部删掉。这里强制隔离到独立测试目录。
+ */
+const TEST_DATA_DIR =
+  process.env.DUAV_TEST_DATA_DIR || path.join(__dirname, '..', 'data-test');
+process.env.DUAV_DATA_DIR = TEST_DATA_DIR;
+const DB_FILE = path.join(TEST_DATA_DIR, 'duav.db');
 
 // 清库重来
 for (const f of [DB_FILE, `${DB_FILE}-wal`, `${DB_FILE}-shm`]) {
   if (fs.existsSync(f)) fs.unlinkSync(f);
 }
 // 清理历史影像
-const dataDir = path.join(__dirname, '..', 'data');
 for (const sub of ['assets', 'preview', 'mail-attach']) {
-  const p = path.join(dataDir, sub);
+  const p = path.join(TEST_DATA_DIR, sub);
   if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
 }
 

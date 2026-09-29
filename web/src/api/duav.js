@@ -58,6 +58,10 @@ export const assetApi = {
   syncStatus: () => get('/api/asset/sync/status'),
   sync: (body) => post('/api/asset/sync', body),
   tasks: (query) => get('/api/asset/tasks', query),
+  // 历史同步出过架次的机场（用于同步弹窗下拉：在线设备 ∪ 历史机场）
+  knownDocks: (projectUuid) => get('/api/asset/known-docks', { projectUuid }),
+  // 批量清理存量无影像架次
+  pruneEmptyTasks: (projectUuid) => post('/api/asset/prune-empty-tasks', { projectUuid }),
   taskImages: (taskUuid) => get(`/api/asset/tasks/${encodeURIComponent(taskUuid)}/images`),
   taskTrack: (taskUuid) => get(`/api/asset/tasks/${encodeURIComponent(taskUuid)}/track`),
   removeTask: (taskUuid) => del(`/api/asset/tasks/${encodeURIComponent(taskUuid)}`),

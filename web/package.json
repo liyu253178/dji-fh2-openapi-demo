@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:datetime": "node scripts/verify-datetime.mjs",
+    "verify:layout": "node scripts/verify-dashboard-layout.mjs",
+    "verify:nav": "node scripts/verify-nav-group.mjs",
+    "verify:sync": "node scripts/verify-sync-dialog.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

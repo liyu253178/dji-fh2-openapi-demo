@@ -1,5 +1,5 @@
 <template>
-  <div class="thumb" :class="{ selected: selected }">
+  <div class="thumb" :class="{ selected: selected }" @click="$emit('click', image)">
     <el-checkbox
       v-if="selectable"
       class="cb"
@@ -8,19 +8,24 @@
       @click.stop
     />
     <span class="idx">{{ index + 1 }}</span>
-    <span class="lens" :class="image.lensType">{{ lensLabel }}</span>
-    <span v-if="image.gpsStatus === 'RTK'" class="gps ok">RTK</span>
-    <span v-else-if="image.gpsStatus" class="gps warn">{{ image.gpsStatus }}</span>
-    <span v-else class="gps err">⚠ 无定位</span>
+    <span v-if="previewable" class="lens" :class="image.lensType">{{ lensLabel }}</span>
+    <span v-else class="lens aux">辅助文件</span>
+    <template v-if="previewable">
+      <span v-if="image.gpsStatus === 'RTK'" class="gps ok">RTK</span>
+      <span v-else-if="image.gpsStatus" class="gps warn">{{ image.gpsStatus }}</span>
+      <span v-else class="gps err">⚠ 无定位</span>
+    </template>
     <span v-if="image.reviewState !== 'none'" class="st" :class="image.reviewState" />
+    <!-- 非影像文件（PPK 等）没有缩略图，直接给占位，避免每次都发一个必然 404 的请求 -->
     <img
+      v-if="previewable"
       :src="url"
       :alt="image.fileName"
       loading="lazy"
-      @click="$emit('click', image)"
       @error="onErr"
     />
-    <div v-if="failed" class="img-err">加载失败</div>
+    <div v-else class="img-err aux">非影像文件<br />{{ image.fileType || 'aux' }}</div>
+    <div v-if="previewable && failed" class="img-err">加载失败</div>
   </div>
 </template>
 
@@ -40,6 +45,8 @@ defineEmits(['click', 'toggle']);
 const failed = ref(false);
 const url = computed(() => assetApi.imageUrl(props.image.id, 'thumb'));
 const lensLabel = computed(() => (props.image.lensType === 'infrared' ? '红外' : '可见光'));
+/** PPK 等辅助文件没有缩略图（hasOriginal=false），不渲染 img、不发请求 */
+const previewable = computed(() => props.image.hasOriginal !== false);
 
 function onErr() {
   failed.value = true;
@@ -89,13 +96,23 @@ function onErr() {
   border-radius: 3px;
   font-size: var(--fs-xs);
 }
+/**
+ * ⚠️ 可读性修复：原本 color 用的是 var(--c-info)=#3b82f6，与背景 rgba(59,130,246,.85)
+ *    是同一个蓝色 —— 蓝字蓝底，对比度≈1:1，文字完全看不见，
+ *    缩略图上就是一块纯蓝色方块。改用深一档的蓝底 + 白字（对比度≈4.9:1）。
+ */
 .lens.visible {
-  color: var(--c-info);
-  background: rgba(59, 130, 246, 0.85);
+  color: #fff;
+  background: #2f6fd0;
 }
 .lens.infrared {
   color: #1a1a1e;
   background: var(--c-warn);
+}
+/* 非影像文件（PPK 等）：中性灰，不带镜头语义 */
+.lens.aux {
+  color: var(--c-text-2);
+  background: rgba(255, 255, 255, 0.14);
 }
 .gps {
   position: absolute;
@@ -146,5 +163,9 @@ img {
   font-size: var(--fs-xs);
   color: var(--c-text-2);
   background: var(--c-bg-2);
+}
+.img-err.aux {
+  text-align: center;
+  line-height: 1.6;
 }
 </style>

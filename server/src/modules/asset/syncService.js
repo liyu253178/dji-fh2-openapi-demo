@@ -14,7 +14,8 @@
 
 import { request } from '../../djiClient.js';
 import { log } from '../../logger.js';
-import { emit } from '../../events.js';import { assetRepo, syncRepo, alertRepo } from '../../db/repositories/index.js';
+import { emit } from '../../events.js';
+import { assetRepo, syncRepo, alertRepo } from '../../db/repositories/index.js';
 import { parseDjiMeta, estimateFootprint } from './djiXmp.js';
 import { downloadImage, readLocal, taskDir, DiskFullError } from './downloader.js';
 import { generateDerivatives } from './thumbnail.js';
@@ -77,6 +78,40 @@ async function fetchMedia(taskUuid, projectUuid) {
   }
   const list = Array.isArray(r.data?.list) ? r.data.list : [];
   return { media: list, noMedia: list.length === 0 };
+}
+
+/**
+ * 逐个机场拉任务清单并去重合并
+ *
+ * ⚠️ 实测坑：司空 /flight-task/list 的 sn 是必填且只能传一个，
+ *    想在项目级别「全量同步」就必须按机场逐个拉再合并。
+ *
+ * ⚠️ 另一个坑：某些机场现已离线/被移出项目，但仍曾在该项目飞行过。
+ *    逐个拉时若其中一台报 200403，不应中断整批（否则一个坏机场就全盘失败），
+ *    记录错误后继续拉其余机场。
+ *
+ * @returns {Promise<{tasks: object[], perDock: object[], errors: object[]}>}
+ */async function fetchAllTasks({ projectUuid, dockSns, beginAt, endAt }) {
+  const perDock = [];
+  const errors = [];
+  const seen = new Set();
+  const tasks = [];
+  for (const sn of dockSns) {
+    try {
+      const list = await fetchTasks({ projectUuid, dockSn: sn, beginAt, endAt });
+      perDock.push({ dockSn: sn, tasks: list.length });
+      for (const t of list) {
+        if (!t.uuid || seen.has(t.uuid)) continue;
+        seen.add(t.uuid);
+        // 记住来源机场：后续入库用各自的 sn，串味会让筛查/统计对不上
+        tasks.push({ ...t, _dockSn: sn });
+      }
+    } catch (e) {
+      errors.push({ dockSn: sn, error: e.message });
+      log.warn('资产同步', `机场 ${sn} 拉取失败（已跳过继续其它机场）: ${e.message}`);
+    }
+  }
+  return { tasks, perDock, errors };
 }
 
 /** 判断镜头类型 */
@@ -266,7 +301,36 @@ export function toEpoch(v, which = 'time') {
   return Math.floor(ms / 1000);
 }
 
-export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, downloadImages = true, limitTasks = 0, onProgress } = {}) {
+/**
+ * 把查询入参归一化成 flight_task.begin_at 的存储格式（ISO UTC 文本）
+ *
+ * ⚠️ 该表的 begin_at 存的是文本（如 2026-08-04T08:19:34.096212Z），SQL 里做的是文本比较。
+ *    若把「秒级时间戳」直接透传进 SQL，数字与文本比较恒为 false（SQLite 中数字 < 文本），
+ *    查询静默返回 0 条，表现为「选了日期就一条架次都查不到」。
+ *    统一走 toEpoch 归一后，时间戳 / ISO 字符串 / YYYY-MM-DD 三种入参都能正确比较。
+ *
+ * @returns {string|undefined} 归一化后的 ISO UTC 文本；入参为空或非法时返回 undefined（不参与过滤）
+ */
+export function toIsoText(v) {
+  if (v === undefined || v === null || v === '') return undefined;
+  try {
+    return new Date(toEpoch(v) * 1000).toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
+export async function syncAssets({
+  projectUuid,
+  dockSn,
+  dockSns,
+  beginAt,
+  endAt,
+  downloadImages = true,
+  skipEmptyTasks = false,
+  limitTasks = 0,
+  onProgress,
+} = {}) {
   if (running) {
     return { ok: false, message: '同步正在进行中，请勿重复触发' };
   }
@@ -276,6 +340,29 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
   if (beginTs >= endTs) {
     return { ok: false, message: `beginAt 必须早于 endAt（${beginTs} >= ${endTs}）` };
   }
+
+  /**
+   * 机场清单：兼容单个 dockSn 与多个 dockSns。
+   * 两者都为空时，回落到「该项目历史同步出过的机场」——项目里明明有数据、
+   * 但机场当前不在线/不在设备树里时，不能因为拿不到在线机场就直接判 0 架次。
+   */
+  const snList = (Array.isArray(dockSns) ? dockSns : dockSns ? [dockSns] : [])
+    .concat(dockSn ? [dockSn] : [])
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+  const docks = [...new Set(snList)];
+  const autoFromHistory = docks.length === 0;
+  if (autoFromHistory) {
+    const known = syncRepo.knownDocks(projectUuid).map((d) => d.dockSn);
+    docks.push(...known);
+  }
+  if (!docks.length) {
+    return {
+      ok: false,
+      message:
+        '未指定机场，且该项目下没有任何历史同步记录可推断机场。请至少选择一个机场再同步。',
+    };
+  }
   running = true;
   current = {
     running: true,
@@ -284,7 +371,11 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
     downloaded: 0,
     skipped: 0,
     failed: 0,
+    emptyTasks: 0,
+    emptySkipped: skipEmptyTasks,
     currentTask: '',
+    docks: docks.length,
+    autoDocks: autoFromHistory,
     startedAt: new Date().toISOString(),
   };
   pushProgress();
@@ -298,6 +389,12 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
     failed: 0,
     noMedia: 0,
     noGps: 0,
+    emptyTasks: 0,
+    skipEmptyTasks,
+    docks,
+    autoDocks: autoFromHistory,
+    perDock: [],
+    dockErrors: [],
     errors: [],
     aborted: false,
   };
@@ -311,13 +408,23 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
     current.downloaded = summary.created;
     current.skipped = summary.skipped;
     current.failed = summary.failed;
+    current.emptyTasks = summary.emptyTasks;
   };
 
   try {
-    // 1. 任务清单
-    const tasks = await fetchTasks({ projectUuid, dockSn, beginAt: beginTs, endAt: endTs });
-    const list = limitTasks > 0 ? tasks.slice(0, limitTasks) : tasks;
-    summary.tasks = list.length;
+    // 1. 任务清单（按机场逐个拉，项目中合集去重）
+    const { tasks: all, perDock, errors: dockErrors } = await fetchAllTasks({
+      projectUuid,
+      dockSns: docks,
+      beginAt: beginTs,
+      endAt: endTs,
+    });
+    summary.perDock = perDock;
+    summary.dockErrors = dockErrors;
+    dockErrors.forEach((e) => summary.errors.push({ dockSn: e.dockSn, error: e.error }));
+
+    const list = limitTasks > 0 ? all.slice(0, limitTasks) : all;
+    // 摘要里的 tasks 记最终真正处理的架次数（剔除掉的不再计入）
     current.totalTasks = list.length;
     pushProgress();
 
@@ -327,14 +434,15 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
 
     // 2. 逐架次处理
     for (const t of list) {
+      const taskDockSn = t._dockSn || dockSn || docks[0];
       current.currentTask = t.name || t.uuid;
       pushProgress();
 
-      // 任务入库（先记，即使后续失败也留下痕迹）
-      syncRepo.upsertTask({
+      // 任务入库的公共字段（失败也要留下痕迹便于排查）
+      const upsertMeta = {
         uuid: t.uuid,
         projectUuid,
-        dockSn,
+        dockSn: taskDockSn,
         name: t.name,
         taskType: t.task_type,
         status: t.status,
@@ -342,17 +450,45 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
         beginAt: t.begin_at,
         endAt: t.end_at,
         mediaTotal: 0,
-      });
+      };
 
       try {
         const { media, noMedia, error } = await fetchMedia(t.uuid, projectUuid);
         if (error) {
+          syncRepo.upsertTask(upsertMeta);
           syncRepo.markTaskSync(t.uuid, { status: 'failed', error });
           summary.failed++;
           syncCounters();
           summary.errors.push({ task: t.name || t.uuid, error });
           log.error('资产同步', `媒体清单拉取失败 ${t.name}: ${error}`);
-        } else if (noMedia) {
+          continue;
+        }
+
+        /**
+         * 「自动剔除无图片航线」：媒体清单里没有一条是真正的照片时整条航线不要。
+         *
+         * 依据：司空会把 FlyToTask_* 定点飞行、纯 PPK 辅助下载等也算成一个架次，
+         * 但它们没有任何影像可看——混在列表里既占名额又让审核工作台默认选中空壳。
+         * 这里在下载之前就判定，避免白下载一轮再删。
+         */
+        const photoCount = media.filter((m) => fileTypeOf(m) === 'image').length;
+        if (skipEmptyTasks && photoCount === 0) {
+          // 同时清掉可能存在的历史空壳记录（存量数据也要一并剔除）
+          syncRepo.deleteTask(t.uuid);
+          summary.emptyTasks++;
+          if (noMedia) summary.noMedia++;
+          syncCounters();
+          pushProgress();
+          log.info(
+            '资产同步',
+            `${t.name}: 无影像成果（${noMedia ? '无媒体清单' : `仅 ${media.length} 个非图片文件`}），已自动剔除`
+          );
+          continue;
+        }
+
+        syncRepo.upsertTask(upsertMeta);
+
+        if (noMedia) {
           syncRepo.markTaskSync(t.uuid, { status: 'ok' });
           summary.noMedia++;
           log.info('资产同步', `${t.name}: 无航拍成果（可能是 FlyToTask 定点飞行）`);
@@ -368,7 +504,7 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
               continue;
             }
             try {
-              const r = await processOne(m, { task: t, projectUuid, dockSn, dir });
+              const r = await processOne(m, { task: t, projectUuid, dockSn: taskDockSn, dir });
               summary.images++;
               if (r.skipped) summary.skipped++;
               else summary.created++;
@@ -401,6 +537,7 @@ export async function syncAssets({ projectUuid, dockSn, beginAt, endAt, download
             `${t.name}: 入库 ${stored} 个文件${pairs ? `，配对 ${pairs} 组` : ''}`
           );
         }
+        summary.tasks++;
       } catch (e) {
         if (e instanceof DiskFullError) throw e;
         summary.failed++;

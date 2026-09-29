@@ -6,7 +6,9 @@
  * 覆盖：建库 → 迁移 → 种子 → 影像入库 → 配对 → 图斑 → 工单 → 状态机
  *       → 非法流转拒绝 → 逾期 → 统计 → 告警
  *
- * 用法：会重建 data/duav.db（仅测试环境安全）
+ * ⚠️ 本脚本会**清空数据库**，因此强制使用独立测试目录（默认 server/data-test），
+ *    绝不触碰 server/data 下的演示/生产库。可用 DUAV_TEST_DATA_DIR 覆盖。
+ *    历史版本直接删 server/data/duav.db —— 跑一次就会毁掉手工测试积累的真实数据。
  */
 
 import fs from 'node:fs';
@@ -14,7 +16,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_FILE = path.join(__dirname, '..', 'data', 'duav.db');
+/** 必须在任何 db 模块被 import 之前设置，config.js 在模块加载时读取它 */
+const TEST_DATA_DIR =
+  process.env.DUAV_TEST_DATA_DIR || path.join(__dirname, '..', 'data-test');
+process.env.DUAV_DATA_DIR = TEST_DATA_DIR;
+const DB_FILE = path.join(TEST_DATA_DIR, 'duav.db');
+for (const f of [DB_FILE, `${DB_FILE}-wal`, `${DB_FILE}-shm`]) {
+  if (fs.existsSync(f)) fs.unlinkSync(f);
+}
 
 let pass = 0;
 let fail = 0;

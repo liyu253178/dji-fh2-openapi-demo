@@ -9,7 +9,7 @@ import path from 'node:path';
 import { toAbsolute, ASSET_DIR, THUMB_DIR, MAIL_IMAGE_DIR } from '../db/config.js';
 import { run } from '../db/index.js';
 import { assetRepo, syncRepo } from '../db/repositories/index.js';
-import { syncAssets, syncStatus, toEpoch } from '../modules/asset/syncService.js';
+import { syncAssets, syncStatus, toEpoch, toIsoText } from '../modules/asset/syncService.js';
 import { removeLocal } from '../modules/asset/downloader.js';
 import { log } from '../logger.js';
 
@@ -80,19 +80,29 @@ function shapeImage(r) {
 
 /** 发起同步（异步，立即返回） */
 router.post('/sync', (req, res) => {
-  const { projectUuid, dockSn, beginAt, endAt, downloadImages = true, limitTasks = 0 } = req.body || {};
-  const missing = [];
-  if (!projectUuid) missing.push('projectUuid');
-  if (!dockSn) missing.push('dockSn(机场SN)');
-  if (!beginAt) missing.push('beginAt');
-  if (!endAt) missing.push('endAt');
-  if (missing.length) {
-    return res.status(400).json({
-      code: 40002,
-      message: `缺少必填参数：${missing.join(' / ')}`,
-      data: { errors: missing },
-    });
+  const {
+    projectUuid,
+    dockSn,
+    dockSns,
+    beginAt,
+    endAt,
+    downloadImages = true,
+    skipEmptyTasks = false,
+    limitTasks = 0,
+  } = req.body || {};
+  if (!projectUuid) {
+    return res.status(400).json({ code: 40002, message: '缺少必填参数：projectUuid' });
   }
+  if (!beginAt || !endAt) {
+    return res
+      .status(400)
+      .json({ code: 40002, message: `缺少必填参数：${[!beginAt && 'beginAt', !endAt && 'endAt'].filter(Boolean).join(' / ')}` });
+  }
+  // ⚠️ 机场不再是必选：留空表示同步该项目全部机场（在线机场 + 历史同步过的机场）。
+  //    项目里曾有过数据、但机场当前不在线时，强制必选会让用户根本无法再同步。
+  const snList = [...(Array.isArray(dockSns) ? dockSns : []), ...(dockSn ? [dockSn] : [])]
+    .map((s) => String(s).trim())
+    .filter(Boolean);
   if (syncStatus().running) {
     return res.status(409).json({ code: 40901, message: '同步正在进行中，请勿重复触发' });
   }
@@ -112,23 +122,68 @@ router.post('/sync', (req, res) => {
   // 后台执行，不阻塞响应
   syncAssets({
     projectUuid,
-    dockSn,
+    dockSns: snList,
     beginAt: beginTs,
     endAt: endTs,
     downloadImages: downloadImages !== false,
+    skipEmptyTasks: skipEmptyTasks === true,
     limitTasks: Number(limitTasks) || 0,
   })
     .then((s) => {
-      log.ok('资产同步', `完成：任务 ${s.tasks}，入库 ${s.created}，跳过 ${s.skipped}，失败 ${s.failed}`);
+      if (s && s.message) {
+        log.warn('资产同步', s.message);
+        return;
+      }
+      log.ok(
+        '资产同步',
+        `完成：架次 ${s.tasks}，入库 ${s.created}，跳过 ${s.skipped}，失败 ${s.failed}` +
+          (s.emptyTasks ? `，剔除无影像 ${s.emptyTasks}` : '')
+      );
     })
     .catch((e) => log.error('资产同步', `后台异常: ${e.message}`));
 
-  res.json({ code: 0, message: '', data: { queued: true } });
+  res.json({ code: 0, message: '', data: { queued: true, docks: snList.length, skipEmptyTasks: skipEmptyTasks === true } });
 });
 
 /** 同步状态（前端轮询兜底） */
 router.get('/sync/status', (req, res) => {
   res.json({ code: 0, message: '', data: syncStatus() });
+});
+
+/**
+ * 某项目下「历史同步出过架次」的机场清单
+ *
+ * 用途：同步弹窗的机场下拉数据源 = 在线设备 ∪ 这里。
+ * 只取在线设备会漏掉「曾在该项目飞行、现已离线/被移出」的机场，
+ * 而这些机场历史上拍的东西正是用户要找的数据。
+ */
+router.get('/known-docks', (req, res) => {
+  const { projectUuid } = req.query || {};
+  if (!projectUuid) {
+    return res.status(400).json({ code: 40002, message: '缺少必填参数：projectUuid' });
+  }
+  const list = syncRepo.knownDocks(projectUuid).map((d) => ({
+    dockSn: d.dockSn,
+    tasks: d.tasks,
+    lastAt: d.lastAt,
+  }));
+  res.json({ code: 0, message: '', data: { projectUuid, total: list.length, list } });
+});
+
+/**
+ * 批量清理「没有任何影像」的存量架次
+ *
+ * 同步选项只管新数据，历史已经入过库的空壳架次要靠这里一次性清掉。
+ * 只删数据库记录，不动磁盘——这些架次本就没有可下载的文件。
+ */
+router.post('/prune-empty-tasks', (req, res) => {
+  const { projectUuid } = req.body || {};
+  if (syncStatus().running) {
+    return res.status(409).json({ code: 40901, message: '同步正在进行中，请稍后再试' });
+  }
+  const removed = syncRepo.deleteEmptyTasks(projectUuid || undefined);
+  log.ok('资产清理', `剔除无影像架次 ${removed} 条${projectUuid ? `（项目 ${projectUuid}）` : '（全部项目）'}`);
+  res.json({ code: 0, message: '', data: { removed } });
 });
 
 // ===================================================================
@@ -141,8 +196,9 @@ router.get('/tasks', (req, res) => {
   const data = syncRepo.listTasks({
     projectUuid,
     dockSn,
-    beginAt,
-    endAt,
+    // 必须归一化成 begin_at 的文本格式再进 SQL，否则时间戳入参会静默查出 0 条（见 toIsoText 注释）
+    beginAt: toIsoText(beginAt),
+    endAt: toIsoText(endAt),
     page: Number(page) || 1,
     pageSize: Math.min(Number(pageSize) || 20, 200),
   });

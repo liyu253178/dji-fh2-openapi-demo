@@ -7,7 +7,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_FILE = path.join(__dirname, '..', 'data', 'duav.db');
+/**
+ * ⚠️ 安全约束：本脚本会清库重建，必须用独立测试目录（默认 server/data-test）。
+ *    历史版本直接删 server/data/duav.db，会把手工同步的真实数据一并毁掉。
+ *    必须在下面 import db 模块之前设置 DUAV_DATA_DIR。
+ */
+const TEST_DATA_DIR =
+  process.env.DUAV_TEST_DATA_DIR || path.join(__dirname, '..', 'data-test');
+process.env.DUAV_DATA_DIR = TEST_DATA_DIR;
+const DB_FILE = path.join(TEST_DATA_DIR, 'duav.db');
 for (const f of [DB_FILE, `${DB_FILE}-wal`, `${DB_FILE}-shm`]) if (fs.existsSync(f)) fs.unlinkSync(f);
 
 let pass = 0, fail = 0;

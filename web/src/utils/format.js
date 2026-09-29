@@ -22,6 +22,39 @@ export function getDisplayValue(val, placeholder = '--') {
 const p2 = (n) => String(n).padStart(2, '0');
 
 /**
+ * Date → 'YYYY-MM-DD'（本地时区）
+ * ⚠️ 不能用 toISOString().slice(0, 10)：那是 UTC，东八区凌晨 0-8 点会算成前一天。
+ */
+export function localDay(d = new Date()) {
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+
+/**
+ * 'YYYY-MM-DD' 日期区间 → 起止边界
+ *
+ * ⚠️ 两个反复踩到的坑：
+ * 1) new Date('2026-08-30') 会按 UTC 午夜解析，在东八区等于当天 08:00。用它查
+ *    「08-30 ~ 09-29」实际成了「08-30 08:00 ~ 09-30 07:59:59」，整体偏移 8 小时
+ *    （漏掉首日 0-8 点的架次、又多查末日之后 0-8 点的）；
+ * 2) 终点若取当天 00:00，则「结束日当天」的记录会被整体排除。
+ * 这里统一按本地时区取 [当天 00:00:00, 当天 23:59:59]。
+ *
+ * @param {[string,string]|null} range
+ * @param {'sec'|'iso'} unit 'sec' 返回秒级时间戳（同步接口按时间戳收）；
+ *        'iso' 返回 ISO UTC 字符串（筛选接口是按文本比较的，库里 begin_at 存的就是 ISO UTC 文本）
+ * @returns {{beginAt:number|string,endAt:number|string}|null} 参数缺失或非法时返回 null
+ */
+export function dayBounds(range, unit = 'sec') {
+  const [b, e] = range || [];
+  if (!b || !e) return null;
+  const start = new Date(`${b}T00:00:00`);
+  const end = new Date(`${e}T23:59:59`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  const conv = unit === 'iso' ? (d) => d.toISOString() : (d) => Math.floor(d.getTime() / 1000);
+  return { beginAt: conv(start), endAt: conv(end) };
+}
+
+/**
  * 秒 / 毫秒时间戳 → 'YYYY-MM-DD HH:mm:ss'
  * 司空 2 的时间字段秒和毫秒混用（有 10 位也有 13 位），自动判别。
  */

@@ -13,6 +13,7 @@
       <el-date-picker
         v-model="q.range"
         type="daterange"
+        value-format="YYYY-MM-DD"
         size="small"
         range-separator="→"
         start-placeholder="开始"
@@ -117,6 +118,7 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { assetApi } from '../api/duav';
 import { useSessionStore } from '../stores/session';
+import { dayBounds } from '../utils/format';
 import PageHeader from '../components/common/PageHeader.vue';
 import FilterBar from '../components/common/FilterBar.vue';
 import StatusTag from '../components/common/StatusTag.vue';
@@ -155,11 +157,12 @@ async function load(toPage) {
   else firstLoading.value = true;
   error.value = '';
   try {
+    const bound = dayBounds(q.range, 'iso');
     const query = {
       projectUuid: store.projectUuid || undefined,
       dockSn: q.dockSn || undefined,
-      beginAt: q.range?.[0] ? new Date(q.range[0]).toISOString() : undefined,
-      endAt: q.range?.[1] ? new Date(q.range[1]).toISOString() : undefined,
+      beginAt: bound?.beginAt,
+      endAt: bound?.endAt,
       page: page.value,
       pageSize,
     };

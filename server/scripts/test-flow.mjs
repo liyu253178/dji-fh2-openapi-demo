@@ -10,7 +10,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_FILE = path.join(__dirname, '..', 'data', 'duav.db');
+/**
+ * ⚠️ 安全约束：本脚本会删库重建，必须用独立测试目录。
+ *    历史版本硬编码删 server/data/duav.db，跑一次就会毁掉手工测试积累的真实数据
+ *    （19 架次 / 148 影像 / 缩略图全部丢失）。这里强制隔离，
+ *    config.js 在模块加载时读 DUAV_DATA_DIR，所以必须在下面的 import 之前设置。
+ */
+const TEST_DATA_DIR =
+  process.env.DUAV_TEST_DATA_DIR || path.join(__dirname, '..', 'data-test');
+process.env.DUAV_DATA_DIR = TEST_DATA_DIR;
+const DB_FILE = path.join(TEST_DATA_DIR, 'duav.db');
 for (const f of [DB_FILE, `${DB_FILE}-wal`, `${DB_FILE}-shm`]) {
   if (fs.existsSync(f)) fs.unlinkSync(f);
 }
@@ -223,6 +232,129 @@ ok('违法建设必填面积', il.requireArea);
 ok('违法建设必填地类', il.requireLandType);
 const dust = dictRepo.getIssueType('DUST');
 ok('扬尘不强制面积', !dust.requireArea);
+
+// ---------------------------------------------------------------- 非影像文件
+/**
+ * 回归用例（来自真实缺陷）：
+ *   司空 media 列表里会夹带 DJI 的 PPK 后处理辅助文件
+ *   （file_type='ppk'，无 shot_at、无原图、无 XMP）。历史上出过两个错：
+ *     ① SQLite 的 `ORDER BY shot_at ASC` 把 NULL 排在**最前**，审核工作台默认选中
+ *        的就是这条记录 → 大图全黑 + 右侧属性全为 "—"，看着像影像全都没同步成功；
+ *     ② upsertImage 把它的 lens_type 兜底成 'visible' → 「仅可见光」筛选排不掉它，
+ *        架次统计里 visible 计数也虚高（63 张真图被算成 67）。
+ *   放在最后执行，避免新插入的记录影响前面各段的计数断言。
+ */
+section('13. 非影像辅助文件（PPK）不抢占列表头部');
+assetRepo.upsertImage({
+  taskUuid: 'task-w3-001',
+  mediaUuid: 'm-ppk-1',
+  projectUuid: PU,
+  dockSn: 'DOCK-W3',
+  fileName: 'DJI_20260920020001_0001_D',
+  fileType: 'ppk',
+  parseStatus: 'ok',
+  // 故意不传 lensType / shotAt，复现真实同步链路的写法
+});
+const withAux = assetRepo.listByTask('task-w3-001');
+ok('辅助文件已入库', withAux.length === 5, `${withAux.length}`);
+ok(
+  '列表首条仍是真实影像（NULL shot_at 不抢占头部）',
+  withAux[0].fileType === 'image',
+  `首条 fileType=${withAux[0].fileType}`
+);
+ok('辅助文件沉到列表末尾', withAux[withAux.length - 1].fileType === 'ppk');
+const auxImg = withAux.find((x) => x.fileType === 'ppk');
+ok(
+  '辅助文件 lensType 不再被兜底成 visible',
+  auxImg.lensType === null || auxImg.lensType === undefined,
+  `lensType=${auxImg.lensType}`
+);
+
+/**
+ * 14. 时间参数归一化与日边界
+ *
+ * 两个反复踩到的坑：
+ *   ① /api/asset/tasks 曾把入参原样透传给 SQL，而 flight_task.begin_at 存的是 ISO UTC 文本。
+ *      传「秒级时间戳」时数字与文本比较恒为 false（SQLite 中数字 < 文本），查询静默返回
+ *      0 条 —— 表现为「一带日期筛选就一条架次都查不到」，且不报任何错。
+ *   ② 前端日期区间的终点若取「结束日 00:00」，结束日当天的架次会被整体排除
+ *      （实测 08-30~09-29 少 5 个架次），dayBounds 统一取到当天 23:59:59。
+ */
+section('14. 时间参数归一化与日边界');
+const { toIsoText } = await import('../src/modules/asset/syncService.js');
+const ISO_BEGIN = '2026-08-29T16:00:00.000Z'; // 东八区 2026-08-30 00:00
+const ISO_END = '2026-09-29T15:59:59.000Z';
+const TS_BEGIN = Math.floor(Date.parse(ISO_BEGIN) / 1000);
+const TS_END = Math.floor(Date.parse(ISO_END) / 1000);
+
+ok('秒级时间戳归一化为 ISO 文本', toIsoText(TS_BEGIN) === ISO_BEGIN, String(toIsoText(TS_BEGIN)));
+ok('ISO 文本归一化幂等', toIsoText(ISO_BEGIN) === ISO_BEGIN, String(toIsoText(ISO_BEGIN)));
+ok('空值不参与过滤', toIsoText('') === undefined && toIsoText(null) === undefined);
+ok('非法值降级为不过滤（不抛错）', toIsoText('not-a-date') === undefined);
+
+const byIso = syncRepo.listTasks({ beginAt: toIsoText(ISO_BEGIN), endAt: toIsoText(ISO_END), pageSize: 200 });
+const byTs = syncRepo.listTasks({ beginAt: toIsoText(TS_BEGIN), endAt: toIsoText(TS_END), pageSize: 200 });
+ok('时间戳与 ISO 两种入参查出的架次一致（且非空）', byIso.total === byTs.total && byIso.total > 0, `${byIso.total} vs ${byTs.total}`);
+
+// 结束日边界：终点取 23:59:59 必须比取 00:00 多查到「结束日当天」的架次
+const endAtDayStart = syncRepo.listTasks({ beginAt: toIsoText(ISO_BEGIN), endAt: toIsoText('2026-09-20T00:00:00.000Z'), pageSize: 200 });
+const endAtDayEnd = syncRepo.listTasks({ beginAt: toIsoText(ISO_BEGIN), endAt: toIsoText('2026-09-20T23:59:59.000Z'), pageSize: 200 });
+ok(
+  '结束日取 23:59:59 能覆盖当天架次（00:00 会漏掉）',
+  endAtDayEnd.total > endAtDayStart.total,
+  `00:00→${endAtDayStart.total} vs 23:59:59→${endAtDayEnd.total}`
+);
+
+/**
+ * 15. 无影像航线剔除 + 历史机场清单
+ *
+ * 真实项目里 49 个架次有 47 个是 FlyToTask 定点飞行 / 纯 PPK 辅助下载，一条照片都没有。
+ * 这些航线同步进来只会污染列表（审核工作台还会默认选中它们导致大图全黑），
+ * 因此：① 同步时可勾选自动剔除；② 存量提供批量清理；③ 同步弹窗的机场下拉
+ * 必须包含「历史同步出过的机场」——只看在线设备会让离线机场的历史数据永远取不到。
+ */
+section('15. 无影像航线剔除与历史机场');
+syncRepo.upsertTask({ uuid: 'task-empty-no-media', projectUuid: PU, dockSn: 'DOCK-W3', name: '定点飞行（无媒体）', taskType: 'immediate', status: 'success', beginAt: '2026-09-21T02:00:00Z' });
+syncRepo.upsertTask({ uuid: 'task-empty-ppk-only', projectUuid: PU, dockSn: 'DOCK-W3', name: '仅PPK辅助文件', taskType: 'immediate', status: 'success', beginAt: '2026-09-22T02:00:00Z' });
+syncRepo.upsertTask({ uuid: 'task-offline-dock', projectUuid: PU, dockSn: 'DOCK-HISTORY-OFFLINE', name: '已离线机场的历史架次', taskType: 'immediate', status: 'success', beginAt: '2026-09-23T02:00:00Z' });
+assetRepo.upsertImage({
+  taskUuid: 'task-empty-ppk-only', mediaUuid: 'm-ppk-only', projectUuid: PU, dockSn: 'DOCK-W3',
+  fileName: 'DJI_20260922020001_0001_D', fileType: 'ppk', parseStatus: 'ok',
+});
+assetRepo.upsertImage({
+  taskUuid: 'task-offline-dock', mediaUuid: 'm-offline-1', projectUuid: PU, dockSn: 'DOCK-HISTORY-OFFLINE',
+  fileName: 'DJI_20260923020001_0001_V', fileType: 'image', lensType: 'visible', parseStatus: 'ok',
+});
+
+const known = syncRepo.knownDocks(PU);
+ok('历史机场清单含在线机场', known.some((d) => d.dockSn === 'DOCK-W3'), JSON.stringify(known.map((d) => d.dockSn)));
+ok(
+  '历史机场清单含已离线机场（只看在线设备会漏）',
+  known.some((d) => d.dockSn === 'DOCK-HISTORY-OFFLINE'),
+  JSON.stringify(known.map((d) => d.dockSn))
+);
+const knownW3 = known.find((d) => d.dockSn === 'DOCK-W3');
+ok('历史机场带架次数统计', knownW3 && knownW3.tasks >= 2, JSON.stringify(knownW3));
+
+const before15 = syncRepo.listTasks({ projectUuid: PU, pageSize: 200 }).total;
+const removed = syncRepo.deleteEmptyTasks(PU);
+ok('批量清理剔除无影像架次', removed === 2, `removed=${removed}`);
+ok('PPK-only 架次同样被判定为无影像', !syncRepo.findTask('task-empty-ppk-only'));
+ok('无媒体架次被剔除', !syncRepo.findTask('task-empty-no-media'));
+ok('有影像架次被保留', !!syncRepo.findTask('task-w3-001'));
+ok(
+  '已离线机场的历史架次被保留（不能连带误删）',
+  !!syncRepo.findTask('task-offline-dock')
+);
+const after15 = syncRepo.listTasks({ projectUuid: PU, pageSize: 200 }).total;
+ok('清理后架次总数正确', after15 === before15 - 2, `${before15} → ${after15}`);
+
+// deleteTask 必须连带清掉名下影像，否则再查该架次会残留孤儿影像记录
+const dropped = 'task-offline-dock';
+const removedRows = syncRepo.deleteTask(dropped);
+ok('deleteTask 返回删除行数', removedRows === 1, `${removedRows}`);
+ok('deleteTask 后架次不存在', !syncRepo.findTask(dropped));
+ok('deleteTask 连带清除名下影像', assetRepo.listByTask(dropped).length === 0);
 
 console.log(`\n${'═'.repeat(58)}`);
 console.log(`测试结果：${pass} 通过 / ${fail} 失败`);

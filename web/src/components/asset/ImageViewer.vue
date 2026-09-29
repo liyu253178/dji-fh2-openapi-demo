@@ -14,8 +14,8 @@
     <ErrorState
       v-else-if="loadError"
       title="图片加载失败"
-      detail="可能是原图已被清理或签名失效"
-      @retry="emit('reload')"
+      :detail="errorDetail"
+      @retry="retry"
     />
 
     <template v-else>
@@ -27,7 +27,7 @@
           :alt="alt"
           draggable="false"
           @load="onImgLoad"
-          @error="loadError = true"
+          @error="innerError = true"
         />
         <!-- 框选矩形（设计稿：橙色半透明） -->
         <div
@@ -72,7 +72,18 @@ const emit = defineEmits(['drawn', 'reload', 'viewchange']);
 
 const boxRef = ref(null);
 const imgRef = ref(null);
-const loading = ref(false);
+/**
+ * ⚠️ 实测缺陷（黑屏无提示）：loadError / loading 曾被同时声明成 props，
+ *    模板里却用 `@error="loadError = true"` 直接赋值。Vue 3 中对 prop 赋值会静默失败，
+ *    于是图片 404 时既进不了错误态、也没有任何提示，只剩 .viewer 的深色底 ——
+ *    看起来就像「影像全部同步失败」。现改为 props 仅作外部受控开关，
+ *    内部状态用独立 ref，二者取或。
+ */
+const innerLoading = ref(false);
+const innerError = ref(false);
+const loading = computed(() => props.loading || innerLoading.value);
+const loadError = computed(() => props.loadError || innerError.value);
+const errorDetail = ref('可能是原图已被清理或签名失效');
 const scale = ref(1);
 const offset = ref({ x: 0, y: 0 });
 const natural = reactive({ w: 0, h: 0 });
@@ -91,11 +102,18 @@ const stageStyle = computed(() => ({
 }));
 
 function onImgLoad() {
+  innerError.value = false;
   if (imgRef.value) {
     natural.w = imgRef.value.naturalWidth;
     natural.h = imgRef.value.naturalHeight;
   }
   fit();
+}
+
+/** 错误态重试：先清内部错误标记，再交给父级换 URL（多为签名过期） */
+function retry() {
+  innerError.value = false;
+  emit('reload');
 }
 
 function fit() {

@@ -34,7 +34,7 @@
           <div style="flex: 1; min-width: 0">
             <div style="display: flex; align-items: center; gap: 8px">
               <span class="code">{{ s.code }}</span>
-              <span class="name">{{ s.name }}</span>
+              <span class="name" :title="s.name">{{ s.name }}</span>
               <span class="tag" :class="s.tagClass">{{ s.statusText }}</span>
             </div>
             <div class="meta">{{ s.meta }}</div>
@@ -498,9 +498,11 @@ onUnmounted(() => {
 .rec-chart { width: 100%; height: 180px; }
 .panel-nest { right: 12px; top: 12px; width: 250px; }
 
-/* 底图切换按钮挪到左下，避开右上「机巢状态」面板；折叠按钮在左，菜单在右 */
+/* 底图切换按钮放右下：左上被作业记录面板占满（高 605px），左侧那条缝塞不下
+   192px 高的工具栏，会以 z-index 999 压在面板的柱状图上。右下在机巢面板下方、
+   KPI 条上方，是唯一不冲突的空位。折叠按钮在左、菜单在右。 */
 .dash :deep(.map-toolbar) {
-  left: 12px; right: auto; top: auto; bottom: 100px;
+  left: auto; right: 12px; top: auto; bottom: 100px;
   align-items: flex-start;
 }
 
