@@ -123,7 +123,7 @@ const nav = [
   { path: '/admin', title: '其他设置', icon: 'Setting' },
 ];
 
-const pageTitle = computed(() => route.meta?.title || '无人机管控平台');
+const pageTitle = computed(() => route.meta?.title || 'DUAV · 无人机巡检监管平台');
 const pageSubtitle = computed(() => route.meta?.subtitle || '');
 /** 大屏 / 座舱需要满屏铺底，不加内边距 */
 const isFullPage = computed(() => !!route.meta?.full);
