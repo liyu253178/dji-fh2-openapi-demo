@@ -29,9 +29,26 @@
             </span>
           </template>
         </el-table-column>
+        <el-table-column label="源文件" width="110">
+          <template #default="{ row }">
+            <span v-if="!checkState[row.id]" class="small muted">未检测</span>
+            <span v-else-if="checkState[row.id].state === 'checking'" class="small muted">检测中…</span>
+            <span v-else-if="checkState[row.id].state === 'bad'" class="tag err" :title="checkState[row.id].message">不可用</span>
+            <span v-else-if="checkState[row.id].state === 'over'" class="tag warn" title="超过浏览器预览上限（300MB），只能下载后查看">过大</span>
+            <span v-else class="tag ok">可用</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" link type="primary" @click="openViewer(row)">三维预览</el-button>
+            <el-button
+              size="small"
+              link
+              type="primary"
+              :disabled="checkState[row.id]?.state === 'bad'"
+              @click="openViewer(row)"
+            >
+              三维预览
+            </el-button>
           </template>
         </el-table-column>
         <template #empty>
@@ -44,9 +61,32 @@
 
     <el-drawer v-model="viewerVisible" :title="`模型预览 · ${current?.name || ''}`" size="62%">
       <div style="display: flex; flex-direction: column; gap: 12px">
+        <!-- 源文件不可用：直接说清原因，别让用户对着空白窗口猜 -->
+        <el-alert
+          v-if="curCheck?.state === 'bad'"
+          type="error"
+          show-icon
+          :closable="false"
+          title="源文件不可用"
+          :description="curCheck.message"
+        />
+        <el-alert
+          v-else-if="curCheck?.state === 'over'"
+          type="warning"
+          show-icon
+          :closable="false"
+          title="模型包超过浏览器预览上限"
+          description="该包大于 300 MB，已自动退回预览图；需要完整模型请点「下载模型包」后用专业软件打开。"
+        />
+
         <!-- 三维窗口：能渲染就渲染真实模型，不能渲染时退回预览图 -->
         <div class="viewer-box">
-          <ModelViewer v-if="viewerVisible && current?.id" :model-id="current.id" :model-name="current.name" />
+          <ModelViewer
+            v-if="viewerVisible && current?.id && curCheck?.state !== 'bad' && curCheck?.state !== 'over'"
+            :model-id="current.id"
+            :model-name="current.name"
+          />
+          <img v-else :src="previewSrc" alt="预览图" class="preview-fallback" />
         </div>
 
         <div class="kv"><span class="k">模型 ID</span><span class="v mono">{{ current?.id }}</span></div>
@@ -63,6 +103,7 @@
             tag="a"
             :href="packageSrc"
             target="_blank"
+            :disabled="curCheck?.state === 'bad'"
           >
             下载模型包
           </el-button>
@@ -88,6 +129,9 @@ const list = ref([]);
 const loading = ref(false);
 const viewerVisible = ref(false);
 const current = ref(null);
+/** 每个模型的源文件预检结果：{ state: 'checking'|'ok'|'bad'|'over', message, size } */
+const checkState = ref({});
+const curCheck = computed(() => (current.value ? checkState.value[current.value.id] : null));
 
 const packageSrc = computed(() =>
   current.value?.id ? modelApi.packageSrc(current.value.id, current.value.name) : ''
@@ -124,9 +168,35 @@ async function load() {
   }
 }
 
+/**
+ * 预检：只取 1 字节，先确认源文件还在、且没超预览上限。
+ * 不做这一步的话，用户点「三维预览」要等整个包下完才知道是 404。
+ */
+async function precheck(row) {
+  if (!row?.id) return;
+  checkState.value = { ...checkState.value, [row.id]: { state: 'checking' } };
+  try {
+    const r = await modelApi.check(row.id);
+    const next = { ...checkState.value };
+    if (r?.ok && r.available === false) {
+      next[row.id] = { state: 'bad', message: r.message || '源文件不可用' };
+    } else if (r?.ok && r.overLimit) {
+      next[row.id] = { state: 'over', size: r.size };
+    } else if (r?.ok) {
+      next[row.id] = { state: 'ok', size: r.size };
+    } else {
+      next[row.id] = { state: 'bad', message: r?.message || '预检失败' };
+    }
+    checkState.value = next;
+  } catch (e) {
+    checkState.value = { ...checkState.value, [row.id]: { state: 'bad', message: e?.message || '预检失败' } };
+  }
+}
+
 function openViewer(row) {
   current.value = row;
   viewerVisible.value = true;
+  precheck(row);
 }
 
 onMounted(load);
@@ -138,6 +208,10 @@ watch(() => store.projectUuid, load);
 .viewer-box {
   width: 100%; height: 420px; border-radius: 8px; overflow: hidden;
   border: 1px solid var(--c-line); background: var(--c-bg-2);
+}
+/* 源文件缺失 / 过大时的兜底：铺满不拉伸 */
+.preview-fallback {
+  width: 100%; height: 100%; object-fit: contain; background: var(--c-bg-2);
 }
 .kv { display: flex; justify-content: space-between; font-size: 13px; }
 .kv .k { color: var(--c-text-2); }

@@ -141,4 +141,9 @@ export const modelApi = {
   /** 模型包下载地址（走后端代理，带原始文件名） */
   packageSrc: (id, name) =>
     `/api/model/${encodeURIComponent(id)}/package${name ? `?name=${encodeURIComponent(name)}` : ''}`,
+  /**
+   * 可用性预检：只取 1 字节，判断源文件还在不在 / 是否超浏览器预览上限。
+   * 避免用户点「三维预览」等半天才弹一个 404。
+   */
+  check: (id) => http.get(`/model/${encodeURIComponent(id)}/check`),
 };
