@@ -94,17 +94,34 @@ for (const r of routes) {
 
 const api = await p.evaluate(async (base) => {
   try {
+    // ⚠️ 不能只看当前激活项目：切到新项目后可能还没有任何同步历史，
+    //    应遍历所有项目，任一项目有历史机场即算通过
     const s = await fetch(base + '/api/session').then((x) => x.json());
-    const pu = (s && s.data && (s.data.projectUuid || s.data.activeProjectUuid)) || '';
-    const r = await fetch(base + '/api/asset/known-docks?projectUuid=' + encodeURIComponent(pu));
-    return await r.json();
+    const d = (s && s.data) || {};
+    const pr = await fetch(base + '/api/session/projects').then((x) => x.json()).catch(() => null);
+    const plist = (pr && pr.data && (pr.data.list || pr.data.projects || pr.data)) || [];
+    const candidates = [];
+    const cur = d.projectUuid || d.activeProjectUuid || '';
+    if (cur) candidates.push(cur);
+    for (const it of Array.isArray(plist) ? plist : []) {
+      const pu = typeof it === 'string' ? it : it.projectUuid || it.uuid || '';
+      if (pu && !candidates.includes(pu)) candidates.push(pu);
+    }
+    for (const pu of candidates) {
+      const r = await fetch(base + '/api/asset/known-docks?projectUuid=' + encodeURIComponent(pu));
+      const j = await r.json();
+      if (j.code === 0 && Array.isArray(j.data && j.data.list) && j.data.list.length > 0) {
+        return { code: 0, projectUuid: pu, data: j.data };
+      }
+    }
+    return { code: 0, projectUuid: candidates[0] || '', data: { list: [] }, scanned: candidates.length };
   } catch (e) {
     return { err: String(e) };
   }
 }, BASE);
 ok('GET /api/asset/known-docks 返回成功', api && api.code === 0, JSON.stringify(api).slice(0, 120));
 const docks = (api && api.data && api.data.list) || [];
-ok('历史机场列表非空', docks.length > 0, docks.length + ' 个 | ' + JSON.stringify(api.data).slice(0, 160));
+ok('历史机场列表非空（遍历全部项目）', docks.length > 0, docks.length + ' 个 | ' + JSON.stringify(api.data).slice(0, 160));
 
 ok('控制台 0 错误', errs.length === 0, errs.slice(0, 2).join(' | '));
 ok('0 个页面级 4xx', bad.length === 0, bad.slice(0, 2).join(' | '));

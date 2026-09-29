@@ -17,7 +17,14 @@
       </el-form-item>
 
       <el-form-item label="标题" prop="title">
-        <el-input v-model="form.title" maxlength="50" show-word-limit placeholder="例：疑似新增钢结构厂房" />
+        <el-input
+          v-model="form.title"
+          maxlength="50"
+          show-word-limit
+          placeholder="留空自动按「街道 + 问题类型」生成"
+          @input="titleTouched = true"
+        />
+        <p v-if="autoTitleHint" class="hint">ⓘ 已按「街道 + 问题类型」自动生成标题，可直接修改</p>
       </el-form-item>
 
       <el-form-item label="描述">
@@ -88,9 +95,9 @@
           :rows="2"
           maxlength="200"
           show-word-limit
-          placeholder="东至XX路，西至XX河，南至XX鱼塘"
+          placeholder="选填：东至XX路，西至XX河，南至XX鱼塘"
         />
-        <p class="hint">ⓘ 请写四至与参照物，让没去过现场的人能定位</p>
+        <p class="hint">ⓘ 选填：有四至与参照物时填写，能让没去过现场的人定位</p>
       </el-form-item>
 
       <el-divider content-position="left">土地属性</el-divider>
@@ -163,6 +170,10 @@ const addrErr = ref(false);
 /** 用户手改过地址/行政区后，自动匹配不再覆盖（避免"改完又被冲掉"） */
 const addrTouched = ref(false);
 const regionTouched = ref(false);
+/** 标题自动生成：街道（来自逆地理）+ 问题类型；用户手改后不再覆盖 */
+const titleTouched = ref(false);
+const streetName = ref('');
+const lastAutoTitle = ref('');
 
 const form = reactive({
   issueType: '',
@@ -184,6 +195,24 @@ const form = reactive({
 });
 
 const typeInfo = computed(() => props.types.find((t) => t.code === form.issueType) || null);
+const autoTitleHint = computed(() => !!form.title && form.title === lastAutoTitle.value);
+
+/**
+ * 自动生成标题：「XX街道 XX问题」
+ * - 街道取逆地理的 township（与行政区/具体地址同源，高德 regeo）
+ * - 问题类型取所选类型名
+ * - 用户手改过标题（titleTouched）或已填了非自动内容时不覆盖
+ * - 没匹配到街道时只用类型名，宁缺勿编
+ */
+function autoTitle() {
+  if (titleTouched.value) return;
+  const label = typeInfo.value?.name || '';
+  if (!label) return;
+  const gen = streetName.value ? `${streetName.value} ${label}` : label;
+  if (form.title && form.title !== lastAutoTitle.value) return; // 已有用户内容
+  form.title = gen;
+  lastAutoTitle.value = gen;
+}
 const hasCoord = computed(() => Number.isFinite(Number(form.latStr)) && Number.isFinite(Number(form.lonStr)) && !!form.latStr && !!form.lonStr);
 const sourceText = computed(
   () => ({ auto: '按影像坐标自动匹配', manual: '人工填写', nearby: '邻近图斑复用', coords: '未匹配' })[form.addressSource] || '未匹配'
@@ -201,10 +230,7 @@ const rules = computed(() => {
     issueType: [{ required: true, message: '请选择问题类型', trigger: 'change' }],
     title: [{ required: true, message: '请填写标题', trigger: 'blur' }],
     adminRegion: [{ required: true, message: '请填写行政区', trigger: 'blur' }],
-    positionDesc: [
-      { required: true, message: '请填写位置描述', trigger: 'blur' },
-      { min: 10, message: '位置描述至少 10 字，让收件人能定位', trigger: 'blur' },
-    ],
+    // 位置描述改为选填：具体地址已按 GPS 自动带出，四至仅作补充
     landType: t?.requireLandType ? [{ required: true, message: '该问题类型必须填写当前地类', trigger: 'change' }] : [],
   };
 });
@@ -265,6 +291,12 @@ async function matchAddress(force = false) {
       regionTouched.value = false;
     }
   }
+  // 记录街道（用于标题自动生成），街道变化会触发标题重算
+  const st = d.township || '';
+  if (st && st !== streetName.value) {
+    streetName.value = st;
+    autoTitle();
+  }
   if (d.needKey) {
     addrMsg.value = d.message || '未配置高德 Key，无法自动匹配地址，请手动填写';
     addrErr.value = true;
@@ -299,6 +331,9 @@ function reset() {
   manualCoord.value = false;
   addrTouched.value = false;
   regionTouched.value = false;
+  titleTouched.value = !!props.patchId; // 编辑模式不覆盖已有标题
+  streetName.value = '';
+  lastAutoTitle.value = '';
   addrMsg.value = '';
   addrErr.value = false;
   // 坐标优先级：框选结果 > 主图 GPS（传来的 imageCoord）
@@ -315,6 +350,7 @@ function reset() {
 function onTypeChange() {
   // 类型变了，若新类型不要求地类则不强制
   formRef.value?.clearValidate('landType');
+  autoTitle(); // 标题跟着问题类型重算（手改过则不覆盖）
 }
 
 function removeImage(id) {
