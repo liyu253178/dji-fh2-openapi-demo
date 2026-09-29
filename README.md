@@ -1,31 +1,107 @@
-# 大疆司空 2 无人机管理与控制平台
+# DUAV · 无人机巡检监管平台
 
-基于 **大疆司空 2 OpenAPI V1.0**（Apifox 文档：<https://fh2-api.apifox.cn/llms.txt> ）开发的无人机管理与控制平台。  
-架构设计见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
+> 面向自然资源 / 政务监管场景的无人机低空巡查平台。
+> 底层对接 **大疆司空 2（DJI FlightHub 2）OpenAPI**，在其上构建「飞得起来 → 看得见 → 派得出去 → 闭得回来」的完整监管闭环。
 
-> ⚠️ **这是一个「可演示 / 可试用」的原型项目**，不是生产级系统：大屏里部分执行记录仍是演示数据、机场相机切换提示未接住、没有手动飞行控制、飞行后自动建模也没做。接口路径与枚举值请以官方文档和你自己实测的版本为准。
->
-> 🔒 **本仓库已做脱敏**：不包含任何真实 TK、设备 SN、项目 UUID、客户名称与坐标。启动前请自备司空 2 组织密钥，详见下方「安全与脱敏」。
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
+![Status](https://img.shields.io/badge/status-active%20development-orange.svg)
 
-## 功能模块
+---
 
-| 模块    | 能力                                                                                                     |
-| ----- | ------------------------------------------------------------------------------------------------------ |
-| 虚拟座舱  | 机场/飞行器选择、**获取/释放控制权**、实时直播（机场舱内·舱外相机、飞行器广角/变焦/红外）、作业地图（机场/飞机实时位置 + 底图切换）、航线选择执行、实时控制指令（返航/暂停/恢复）、图传清晰度 |
-| 可视化大屏 | 设备统计、状态分布、近 7 日任务趋势、设备分布地图、设备清单                                                                        |
-| 航线管理  | 航线列表、**上传（STS→存储桶→上传通知）**、**下载**、一键创建立即任务                                                              |
-| 任务管理  | 任务列表/筛选、详情、挂起/恢复、媒体资源、飞行轨迹地图                                                                           |
-| 设备管理  | 物模型实时状态、HMS 异常、控制权、相机/镜头/清晰度控制、实时指令、设备位置地图                                                             |
-| 司空管理  | **OpenAPI TK 多组织切换**、接入点切换（公有云国内/海外/私有云自定义）、项目选择、连通性体检、**API 测试器**（任意接口直连调试）、实时日志输出                    |
+## 这是什么
 
-## 配套 Skill：`司空 2_open_api`
+DUAV 不是「无人机地图大屏」，而是一套**把空中发现转成可派发、可核查、可整改、可复核、可归档的自然资源监管流程**的系统。
 
-本项目联调过程中沉淀的经验已整理成可复用的 Skill，放在 [`skills/sikong2-openapi/`](./skills/sikong2-openapi/)（安装到 `~/.workbuddy/skills/` 即可直接使用）。内容覆盖：鉴权与组织切换的坑、设备/物模型/控制权、图传直播三引擎与计费红线、KMZ 上下行、飞行任务记录、媒体下载、3D Tiles/b3dm 解析与 LOD、脱敏清单；另附 `references/api-cheatsheet.md`（接口速查）与 `references/error-codes.md`（错误码与现象对照）。
+它回答五个问题：
 
-## 快速启动
+| 问题 | 由什么支撑 |
+|---|---|
+| **谁在飞** | 设备底账（一机一档，机场 + 飞行器 + 载荷 + 责任单位） |
+| **飞到哪里** | 实时态势、航线库、飞行任务、遥测轨迹 |
+| **看见了什么** | 成果资产库（原图 + GPS + RTK 状态 + 拍摄姿态） |
+| **归谁处理** | 问题图斑 + 责任主体派发 + 邮件工单 |
+| **处理完没有** | 整改闭环状态机 + 复核销号 + 台账统计 |
+
+> 💡 **核心观点**：低空监管的价值不是把无人机图标放到地图上，而是把「空中发现」翻译成「业务可办」。
+> 卫星看全域、低空看细节、套合判属性、平台管闭环。
+
+---
+
+## 能力概览
+
+### 飞行与控制
+
+| 能力 | 说明 |
+|---|---|
+| 虚拟座舱 | 机场/飞行器选择、控制权获取与释放、实时直播、作业地图、航线执行、实时指令（返航/暂停/恢复） |
+| 多路直播 | 机场舱内/舱外相机、飞行器广角/变焦/红外三镜头；**volc / agora / srs 三引擎自适应** |
+| 航线管理 | 列表、上传（STS 临时凭证 → 对象存储 → 上传通知）、下载、一键创建立即任务 |
+| 任务管理 | 列表/筛选、详情、挂起/恢复、媒体资源、飞行轨迹 |
+| 设备管理 | 物模型实时状态（47 字段）、HMS 异常、控制权、相机/镜头/清晰度控制、实时指令 |
+| 监管大屏 | 架次、里程、时长、在线率、成功率等政务指标 |
+| 最优机巢推荐 | 按目标点坐标与电量需求推荐起降机巢 |
+
+### 成果资产（监管证据链）
+
+| 能力 | 说明 |
+|---|---|
+| 媒体同步 | 按机场 / 项目 / 时间范围拉取飞行任务产物，自动下载原图 |
+| **DJI 影像元数据解析** | 提取 GPS、RTK 定位质量、绝对/相对高度、云台与机身三轴角、飞行器 SN、相机 SN、镜头类型、飞行航线 ID |
+| 地面覆盖估算 | 由高度 + FOV + 姿态角推算单张照片的地面覆盖范围（footprint），支持地图框选 |
+| 多光谱配对 | 红外（`_T`）与可见光（`_V`）同架次自动配对，支持同屏比对 |
+| 架次聚合 | 按 `FlightLineInfo` 自动聚合同一次飞行的所有照片 |
+
+> ⚠️ **重要技术特性**：DJI 机型（M4TD 等）**不写标准 EXIF GPS IFD**，GPS 全部存放在 XMP 的 `drone-dji` 私有命名空间。
+> 通用 exif 库会返回 `null`。本平台内置专用解析器，实测 **14/14 张 RTK 级坐标提取成功**。
+> 详见 [`server/src/modules/asset/djiXmp.js`](./server/src/modules/asset/djiXmp.js)。
+
+### 工单闭环
+
+| 能力 | 说明 |
+|---|---|
+| 人工审核工作台 | 按架次批量处理、缩略图速览、地图定位、框选图斑、问题类型判定 |
+| 图斑库 | 空间载体，可独立存在；AI 识别结果后续挂载到同一模型 |
+| 工单状态机 | `草稿 → 已派发 → 已接收 → 整改中 → 已整改 → 待复核 → 已通过 → 已销号`（含退回分支） |
+| 邮件派发 | 图片附件 + 位置示意图 + 空间描述 + 在线处理深链接 |
+| 台账统计 | 按行政区、时间、状态、问题类型统计 |
+
+### 系统管理
+
+- **多组织 TK 切换** — 多组织密钥保存与热切换
+- **多接入点** — 公有云国内 / 海外 / 私有云自定义
+- **API 测试器** — 任意接口直连调试，无需改代码
+- **实时日志** — SSE 推送的环形日志缓冲，原始 `code`/`message`/耗时可见
+- **演示模式** — 无 TK 时以本地 mock 数据启动，可直接演示
+
+---
+
+## 技术栈
+
+| 层 | 选型 |
+|---|---|
+| 前端 | Vue 3 · Vite · Pinia · Vue Router · Element Plus · Leaflet · ECharts |
+| 地图 | 高德 / 吉林一号瓦片，WGS84 → GCJ-02 纠偏 |
+| 直播 | `@volcengine/rtc`（火山）· `agora-rtc-sdk-ng`（声网）· 原生 WebRTC WHEP（SRS） |
+| 后端 | Node.js · Express，统一注入 `X-User-Token / X-Project-Uuid / X-Request-Id / X-Language` |
+| 存储 | `ali-oss` + STS 临时凭证（航线上传） |
+| 影像解析 | 自研 XMP `drone-dji` 解析器，零外部依赖 |
+
+**后端分层**：
+
+```
+routes/    薄路由：契约与校验
+services/  领域服务：telemetry · device · wayline · task · live · stats · scheduler
+modules/   业务模块：asset（成果资产）· review（审核）· ticket（工单）· notice（通知）
+infra/     djiClient 网关 · cache(TTL) · events(SSE) · logger · store(TK) · mock
+```
+
+---
+
+## 快速开始
 
 ```bash
-# 1. 启动后端 BFF（端口 8787）
+# 1. 启动后端（端口 8787）
 cd server
 npm install
 npm run dev
@@ -35,96 +111,131 @@ cd web
 npm install
 npm run dev
 
-# 3. 浏览器打开 http://localhost:5173
+# 3. 打开 http://localhost:5173
 ```
 
-> **TK 需要你自己提供**，仓库里没有任何内置密钥。两种方式二选一：
->
-> 1. 启动后在 **司空管理 → 添加 TK** 里粘贴（司空 2「组织设置 → 云端互联 → 组织密钥」），可保存多个 TK 并随时切换组织；
-> 2. 启动时用环境变量注入：
->
-> ```bash
-> FH2_TOKEN=你的组织密钥 npm run dev
-> ```
->
-> 其它可选环境变量见 [.env.example](./.env.example)。没有 TK 时平台会以「演示模式」启动（接口走本地 mock 数据）。
+**TK 需要自备**，仓库不含任何内置密钥。两种方式二选一：
 
-## 安全与脱敏
-
-本仓库在导出前做了统一脱敏，脚本保留在 `tools/`：
+1. 启动后在「系统管理 → 添加 TK」中粘贴
+   （TK 获取路径：大疆司空 2 → 我的组织 → 组织设置 → 云端互联 → 组织密钥）
+2. 启动时用环境变量注入：
 
 ```bash
-node tools/sanitize.mjs        # 批量替换 JWT / 设备 SN / 项目 UUID 为 YOUR_XXX 占位符
-node tools/check-secrets.mjs   # 扫描残留敏感信息，有问题时以非 0 退出（可挂进 CI / pre-commit）
+FH2_TOKEN=你的组织密钥 npm run dev
 ```
 
-脱敏范围包括：`server/src/store.js` 里硬编码的 TK 已移除（改为只读 `FH2_TOKEN`）、`server/scripts/probe-*.mjs` 中的设备 SN 与项目 UUID、`ARCHITECTURE.md` 中的组织 UUID / 客户名 / 坐标、以及所有可能带 SN 与客户名的截图。
+> 可选环境变量见 [.env.example](./.env.example)。无 TK 时平台以**演示模式**启动（接口走本地 mock）。
 
-**仍然建议你在公开仓库前再自查一遍**：`.gitignore` 已排除 `server/data/`（含 `tokens.json`）、`docs/api/`、`tests/report/`、`node_modules/`、`web/dist/` 与 `.env*`；如果你本地跑过项目，别把 `server/data/` 手动提交上去。
-
-## 使用流程（严格按序）
-
-1. **司空管理 → 连接**：确认接入点（公有云国内 / 海外 / 私有云自定义），点击「连通性体检」。
-2. **添加 TK**：粘贴司空 2「组织设置 → 云端互联 → 组织密钥」，可保存多个 TK 随时切换组织。
-3. **选择项目**：顶栏或司空管理页选择项目（`X-Project-Uuid`）。
-4. 进入虚拟座舱/设备管理操作设备；进入航线/任务管理执行任务。
-
-## 常见问题排查
-
-| 现象                                                | 处理                                                                                                                        |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `200401 Unauthorized` / `token validation failed` | TK 与接入点不匹配：在「司空管理 → 接入点」切换 国内/海外/私有云 后重新体检；或在司空 2 重新生成组织密钥后更新 TK                                                          |
-| 控制权获取 `Bad Request`                               | `drone_sn` 必须是**飞行器 SN**（不是机场 SN），`payload_index` 必须是数组，如 `["81-0-0"]`                                                    |
-| 控制权释放 `internal server error`                     | 释放接口是 **DELETE + JSON Body**（本平台已按文档实现）；确认释放的 payload 与获取时一致                                                              |
-| 直播播放失败                                            | 司空 2 动态选择直播供应商（volc / agora / srs），本平台三引擎自适应；在「司空管理 → API 测试」直连 `/openapi/v0.1/live-stream/start` 查看原始 `url_type` 与 `url` |
-| 地图无机场/飞机                                          | 坐标来自物模型 `/device/{sn}/state`，需设备在线；飞行器未起飞时显示 Home 点                                                                       |
-| 航线上传失败                                            | 需已选择项目（STS 凭证按项目发放），且文件为 .kmz/.kml                                                                                        |
-
-## 技术栈
-
-- 前端：Vue 3 + Vite + Pinia + Vue Router + Element Plus + Leaflet（高德/吉林一号瓦片，WGS84→GCJ02 纠偏）+ ECharts
-- 播放器：`@volcengine/rtc`（火山）· `agora-rtc-sdk-ng`（声网）· 原生 WebRTC WHEP（SRS），按司空 2 返回的 `url_type` 自适应
-- 后端：Node.js + Express，统一注入 `X-User-Token / X-Project-Uuid / X-Request-Id / X-Language`，非 JSON 响应安全归一化（不再出现 `Unexpected non-whitespace character after JSON` 类报错）
-- 航线上传：`ali-oss` + STS 临时凭证 + `wayline/finish-upload` 通知
+**使用流程**：系统管理 → 连通性体检 → 添加 TK → 选择项目 → 进入座舱 / 设备 / 航线 / 任务。
 
 ---
 
-# 架构 V2：一网统飞 · 无人机巡检政务平台
-
-重构方案见 [docs/ARCHITECTURE-v2.md](./docs/ARCHITECTURE-v2.md)（依据《大疆司空 2 使用说明》+ OpenAPI 能力边界 + 政务一网统飞业务模型）。
-
-## 信息架构（重构后）
-
-| 路由           | 页面       | 说明                            |
-| ------------ | -------- | ----------------------------- |
-| `/monitor`   | 飞行监控（首屏） | 地图为核：机场/飞行器实时位置、设备态势、最优机巢推荐   |
-| `/cockpit`   | 虚拟座舱     | 直播（舱内/舱外 + 镜头）、控制权、遥测、指令、航线执行 |
-| `/wayline`   | 航线库      | 列表、上传（STS）、下载、下发为计划           |
-| `/plan`      | 计划库      | 任务列表/创建/状态机/媒体/轨迹             |
-| `/data`      | 数据中心     | 任务媒体归集、轨迹、模型与标注说明             |
-| `/assets`    | 设备资产     | 机场/飞行器台账、物模型、HMS、控制           |
-| `/dashboard` | 监管大屏     | 架次/里程/时长/在线率/成功率等政务指标         |
-| `/admin`     | 系统管理     | TK 与接入点、项目、API 测试器、日志、演示模式    |
-
-## 后端分层（重构后）
+## 项目结构
 
 ```
-routes/    薄路由：契约与校验
-services/  领域服务：telemetry（遥测聚合+状态归一化+缓存）· device · wayline · task · live（供应商自适应）
-           stats（监管指标）· scheduler（最优机巢推荐 + 巡检编排）
-infra/     djiClient 网关 · cache(TTL) · events(SSE) · logger · store(TK) · mock
+duav/
+├── ARCHITECTURE.md          架构设计（数据流、时序、接口清单、联调结论）
+├── docs/
+│   ├── ARCHITECTURE-v2.md   政务版信息架构与后端分层
+│   └── 示例库对照与改进建议.md
+├── server/                  后端 BFF :8787
+│   ├── src/
+│   │   ├── index.js         应用入口、路由挂载、SSE
+│   │   ├── djiClient.js     司空 2 统一网关（鉴权、超时、safeParse）
+│   │   ├── logger.js        环形日志缓冲 + SSE
+│   │   ├── routes/          session device live wayline task model admin ops
+│   │   ├── services/        领域服务
+│   │   └── modules/
+│   │       ├── asset/       成果资产（djiXmp.js 影像解析）
+│   │       ├── drone/       无人机业务
+│   │       └── system/
+│   └── scripts/             probe-*.mjs 接口探针
+├── web/                     前端 SPA :5173
+│   └── src/
+│       ├── views/           座舱 大屏 航线 设备 模型 系统管理
+│       ├── components/      地图 播放器 模型查看 日志
+│       └── api/dji.js       统一 HTTP + 错误归一化
+├── skills/                  配套开发经验 Skill
+├── tools/                   脱敏与密钥扫描
+└── tests/                   回归测试
 ```
 
-新增接口：
+---
 
-```
-GET  /api/ops/snapshot          统一遥测快照（监控/座舱/大屏复用，TTL 8s）
-POST /api/ops/snapshot/refresh  强制刷新
-GET  /api/ops/overview          监管总览（设备/飞行/资源/趋势）
-POST /api/ops/recommend-nest    最优机巢推荐 {lat,lng,minBattery}
-POST /api/ops/plan              批量巡检编排 {targets}
-GET  /api/events/stream         领域事件 SSE（设备上下线）
-GET  /api/ops/cache             缓存运维
+## 配套开发经验 Skill
+
+联调过程中沉淀的经验已整理为可复用 Skill，位于 [`skills/sikong2-openapi/`](./skills/sikong2-openapi/)：
+
+- 鉴权与组织切换的坑（TK 截断、接入点错配、缓存串味）
+- 设备 / 物模型 / 控制权（DELETE + JSON Body、SN 校验）
+- 图传直播三引擎适配与计费红线
+- KMZ 航线上下行
+- 飞行任务记录（缺参静默返回空列表）
+- 媒体下载（签名 24h 过期、XMP GPS 解析）
+- 3D Tiles / b3dm 解析与 LOD 策略
+- 脱敏清单
+
+附 `references/api-cheatsheet.md`（接口速查）与 `references/error-codes.md`（错误码与现象对照）。
+安装到 `~/.workbuddy/skills/` 即可直接使用。
+
+---
+
+## 安全与脱敏
+
+本仓库在导出前做了统一脱敏：
+
+```bash
+node tools/sanitize.mjs        # 批量替换 JWT / 设备 SN / 项目 UUID 为 YOUR_XXX 占位符
+node tools/check-secrets.mjs   # 扫描残留敏感信息，有问题时以非 0 退出（可挂 CI / pre-commit）
 ```
 
-回归测试：`./tests/full-test.sh`（覆盖后端 API + 八大模块浏览器驱动断言）。
+**仓库内不包含任何真实组织密钥、设备 SN、项目 UUID、客户名称与坐标。**
+
+`.gitignore` 已排除：
+
+- `server/data/`（含 `tokens.json`）
+- `docs/api/`（官方文档副本，含 Token 示例）
+- `tests/report/`（截图可能含 SN 与客户项目名）
+- `node_modules/` · `web/dist/` · `.env*`
+
+> ⚠️ 组织密钥（TK）请只通过环境变量注入。**不要**写入源码、前端、日志、截图或 commit。
+
+---
+
+## 常见问题
+
+| 现象 | 处理 |
+|---|---|
+| `200401 Unauthorized` / `token validation failed` | TK 与接入点不匹配。在「系统管理 → 接入点」切换 国内/海外/私有云后重新体检；或在司空 2 重新生成组织密钥。TK 是 JWT，需三段完整 |
+| 控制权获取 `Bad Request` | `drone_sn` 必须是**飞行器 SN**（不是机场 SN），`payload_index` 必须是数组，如 `["81-0-0"]` |
+| 控制权释放 `internal server error` | 释放接口是 **DELETE + JSON Body**，需与获取时的 payload 一致 |
+| 直播播放失败 | 司空 2 动态选择供应商（volc / agora / srs），本平台三引擎自适应。在「系统管理 → API 测试」直连 `/openapi/v0.1/live-stream/start` 查看原始 `url_type` 与 `url` |
+| 飞行器镜头相关操作失败 | 飞行器**必须开机**才有 `camera_list`。司空 2 无远程开机接口，需现场开机或创建起飞任务触发上电 |
+| 地图无机场 / 飞机 | 坐标来自物模型 `/device/{sn}/state`，需设备在线且已选择正确项目 |
+| 媒体 URL 返回 403 | 媒体签名有效期约 24 小时。**每次使用前重新调用 media 接口取新签名，不要缓存 URL**；探测可用性用 `GET + Range: bytes=0-0`，不要用 `HEAD` |
+| 影像读不出 GPS | DJI 机型不写标准 EXIF GPS，请用 `modules/asset/djiXmp.js` 解析 XMP；且必须用**原图**，缩略图已剥离元数据 |
+| 航线上传失败 | 需已选择项目（STS 凭证按项目发放），文件为 .kmz，且压缩包内只含 `wpmz/template.kml` + `wpmz/waylines.wpml`（不要带 `__MACOSX/`、`.DS_Store`） |
+| 飞行任务列表为空但确实飞过 | `/flight-task/list` 的 `sn` / `begin_at` / `end_at` 为**必填**，缺参数不报错但静默返回空列表。`sn` 用**机场 SN** |
+
+---
+
+## 已知边界
+
+本项目聚焦「空中发现 → 业务闭环」，以下能力**不在 OpenAPI 范围内**，需通过其他途径实现：
+
+| 能力 | 说明 |
+|---|---|
+| AI 算法接入 | 司空 2 OpenAPI 未开放算法下发与推理结果接口，AI 需自建后挂载到图斑模型 |
+| 机载算法 | 需走大疆 PSDK / 行业应用 + 机载算力 |
+| 航线规划 | 需在司空 2 或 Pilot 2 中完成，OpenAPI 只做上传 / 下载 / 执行 |
+| 手动飞行控制 | 仅有实时指令下发与航线任务 |
+| 远程开机 | 无此接口 |
+| 飞行后自动建模 | 需在司空 2 侧触发 |
+
+---
+
+## 许可证
+
+[MIT](./LICENSE)
+
+本项目为独立实现，与 DJI 无隶属关系。大疆司空 2 / FlightHub 2 为大疆创新（DJI）旗下产品，其 API 能力边界以官方文档为准。
