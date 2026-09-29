@@ -87,7 +87,7 @@
           </el-table-column>
           <el-table-column label="操作" width="130" align="right">
             <template #default="{ row }">
-              <el-button size="small" text type="primary" @click.stop="openTask(row)">查看影像</el-button>
+              <el-button size="small" text type="primary" @click.stop="openTask(row)">审核影像</el-button>
               <el-button size="small" text type="danger" @click.stop="removeTask(row)">删除</el-button>
             </template>
           </el-table-column>

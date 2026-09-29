@@ -189,7 +189,6 @@
       :initial-image-ids="selected.length ? selected : [current.id]"
       :primary-image-id="selected[0] || current.id"
       @saved="onSaved"
-      @redraw="needRedraw = true"
     />
   </div>
 </template>
@@ -227,7 +226,6 @@ const firstLoading = ref(true);
 const error = ref('');
 const draw = ref(null);
 const formVisible = ref(false);
-const needRedraw = ref(false);
 
 const projectUuid = computed(() => store.projectUuid || '');
 const flightLineId = computed(() => task.value?.flightLineId || '');
@@ -334,20 +332,18 @@ function onDrawn({ x, y, w, h, naturalW, naturalH }) {
     type: 'Polygon',
     coordinates: [[[lon1, lat1], [lon2, lat1], [lon2, lat2], [lon1, lat2], [lon1, lat1]]],
   };
-  reviewApi.areaEstimate(geometry).then((r) => {
-    if (r.ok) {
-      draw.value = { geometry, areaM2: r.data.areaM2, lat: r.data.centroid?.lat, lon: r.data.centroid?.lon };
-      formVisible.value = true;
-    } else {
-      ElMessage.error(r.message || '面积估算失败');
-    }
-  });
+  // ⚠️ 不再调用 areaEstimate：无人机照片的 GSD / 相对高度本来就偏差大（实测可达 ±20%），
+  //    换算出的「≈1822 ㎡」会误导，表单里的面积显示与其计算已整体删除。
+  //    中心点本地算（外接框对角中点即可，精度对定位足够）。
+  const lat = (lat1 + lat2) / 2;
+  const lon = (lon1 + lon2) / 2;
+  draw.value = { geometry, lat, lon };
+  formVisible.value = true;
 }
 
 function openForm() {
   if (!draw.value) {
-    needRedraw.value = true;
-    ElMessage.info('请先在图上拖拽框选问题范围');
+    ElMessage.info('请先在图上拖拽框选问题位置');
     return;
   }
   formVisible.value = true;
@@ -357,7 +353,7 @@ function mergeSelected() {
   if (selected.value.length < 2) return;
   // 多图合并：以第一张为主图，框选沿用当前
   if (!draw.value) {
-    ElMessage.info('请先框选问题范围，再合并多张影像');
+    ElMessage.info('请先框选问题位置，再合并多张影像');
     return;
   }
   formVisible.value = true;

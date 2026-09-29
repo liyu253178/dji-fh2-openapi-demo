@@ -155,7 +155,8 @@ const nav = [
     icon: 'Tickets',
     children: [
       { path: '/assets', title: '巡检成果', icon: 'FolderOpened' },
-      { path: '/review', title: '影像审核', icon: 'View' },
+      // 「影像审核」独立菜单已删除：入口统一收到巡检成果的「审核影像」，
+      // 建出的图斑/工单分别在工作台右栏与工单列表看，不再需要单独的队列页。
       { path: '/tickets', title: '工单列表', icon: 'Tickets' },
       { path: '/stats', title: '台账统计', icon: 'DataAnalysis' },
       { path: '/admin/dict', title: '问题字典', icon: 'Notebook' },

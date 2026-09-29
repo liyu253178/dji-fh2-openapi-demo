@@ -24,7 +24,9 @@ const routes = [
 
   // ---------- 一期新增 ----------
   { path: '/assets', name: 'assets', component: () => import('../views/AssetLibraryView.vue'), meta: { title: '巡检成果', subtitle: '航拍影像与架次', icon: 'FolderOpened' } },
-  { path: '/review', name: 'review', component: () => import('../views/ReviewQueueView.vue'), meta: { title: '影像审核', subtitle: '人工标注与工单生成', icon: 'View' } },
+  // 「影像审核」队列页（ReviewQueueView）已删除：审核入口统一在巡检成果的「审核影像」，
+  // 这里保留 /review 深链接（邮件、历史收藏、外部跳转）兼容重定向，避免 404。
+  { path: '/review', redirect: '/assets' },
   { path: '/review/task/:taskUuid', name: 'review-task', component: () => import('../views/ReviewWorkbenchView.vue'), meta: { title: '审核工作台', hidden: true } },
   { path: '/tickets', name: 'tickets', component: () => import('../views/TicketListView.vue'), meta: { title: '工单管理', subtitle: '派发与跟踪', icon: 'Tickets' } },
   { path: '/tickets/:id', name: 'ticket-detail', component: () => import('../views/TicketDetailView.vue'), meta: { title: '工单详情', hidden: true } },
