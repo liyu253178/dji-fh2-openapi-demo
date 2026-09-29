@@ -103,7 +103,10 @@ export function buildContext({ ticket, patch, recipient, images = [], config, lo
     org_contact: config?.orgContact || '',
     contact_name: recipient?.contact || '',
     platform_url: config?.platformUrl || '',
-    ticket_url: `${config?.platformUrl || ''}/#/tickets/${ticket.id}`,
+    // ⚠️ 路由用 createWebHistory（非 hash 模式），深链接不能带 #/，
+    //    否则 hash 会被当作路径的一部分导致路由匹配不到。
+    //    server/src/index.js 已配 SPA 回退（排除 /api|/logs|/events），可直接命中。
+    ticket_url: `${config?.platformUrl || ''}/tickets/${ticket.id}`,
     recipient_name: recipient?.name || '',
     recipient_address: recipient?.addressDesc || '',
   };

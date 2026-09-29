@@ -14,7 +14,8 @@ const routes = [
   { path: '/dashboard', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { title: '首页大屏', subtitle: '巡检指挥中心', icon: 'Monitor', full: true } },
   { path: '/cockpit', name: 'cockpit', component: () => import('../views/CockpitView.vue'), meta: { title: '虚拟座舱', subtitle: '实时飞行控制', icon: 'Coordinate', full: true } },
   { path: '/wayline', name: 'wayline', component: () => import('../views/WaylineView.vue'), meta: { title: '航线管理', subtitle: '航线库与规划', icon: 'MapLocation' } },
-  { path: '/assets', name: 'assets', component: () => import('../views/DeviceView.vue'), meta: { title: '设备管理', subtitle: '机场与飞行器', icon: 'Box' } },
+  // 「设备管理」原占用 /assets，一期「巡检成果」需要 /assets，故迁至 /devices
+  { path: '/devices', name: 'devices', component: () => import('../views/DeviceView.vue'), meta: { title: '设备管理', subtitle: '机场与飞行器', icon: 'Box' } },
   { path: '/models', name: 'models', component: () => import('../views/ModelLibraryView.vue'), meta: { title: '模型库', subtitle: '项目模型预览', icon: 'Collection' } },
   { path: '/admin', name: 'admin', component: () => import('../views/AdminView.vue'), meta: { title: '其他设置', subtitle: '组织 · 接入点 · 日志', icon: 'Setting' } },
 ];

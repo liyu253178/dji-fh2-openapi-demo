@@ -118,7 +118,7 @@ const nav = [
   { path: '/dashboard', title: '首页大屏', icon: 'Monitor', badge: 'online' },
   { path: '/cockpit', title: '虚拟座舱', icon: 'Coordinate' },
   { path: '/wayline', title: '航线管理', icon: 'MapLocation' },
-  { path: '/assets', title: '设备管理', icon: 'Box' },
+  { path: '/devices', title: '设备管理', icon: 'Box' },
   { path: '/models', title: '模型库', icon: 'Collection' },
   { path: '/admin', title: '其他设置', icon: 'Setting' },
 ];
