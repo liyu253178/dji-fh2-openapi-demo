@@ -37,7 +37,7 @@
             <span v-if="!checkState[row.id]" class="small muted">未检测</span>
             <span v-else-if="checkState[row.id].state === 'checking'" class="small muted">检测中…</span>
             <span v-else-if="checkState[row.id].state === 'bad'" class="tag err" :title="checkState[row.id].message">不可用</span>
-            <span v-else-if="checkState[row.id].state === 'over'" class="tag warn" title="超过浏览器预览上限（300MB），只能下载后查看">过大</span>
+            <span v-else-if="checkState[row.id].state === 'over'" class="tag warn" :title="`${sizeText(checkState[row.id].size)}，超过 2GB 预览上限`">过大</span>
             <span v-else class="tag ok">可用</span>
           </template>
         </el-table-column>
@@ -78,8 +78,8 @@
           type="warning"
           show-icon
           :closable="false"
-          title="模型包超过浏览器预览上限"
-          description="该包大于 300 MB，已自动退回预览图；需要完整模型请点「下载模型包」后用专业软件打开。"
+          title="模型包超过预览上限"
+          description="该包大于 2 GB（异常包），已自动退回预览图；需要完整模型请点「下载模型包」后用专业软件打开。"
         />
 
         <!-- 预览窗口：3D 走 b3dm/glb 渲染，2D 走正射影像瓦片金字塔 -->

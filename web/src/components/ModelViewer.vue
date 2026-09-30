@@ -57,8 +57,17 @@ const bboxInfo = ref('');
  * 用它做判据会「永远细化」或「永不细化」，所以这里改用投影像素。
  */
 const MAX_PIXELS = 220;
-const MAX_LOADED = 900;
-const MAX_PARALLEL = 8;
+/**
+ * 显存预算（估算的解压后字节数），不是瓦片个数。
+ *
+ * 之前只限「瓦片数 900」，但瓦片大小差异极大（0.5MB~20MB 都有），
+ * 900 个大瓦片能把浏览器堆内存顶到 1GB 以上直接崩掉——这正是
+ * 「大模型打不开」的真正原因。改成按字节预算：超了就按最久未用淘汰，
+ * 显存占用就有了硬上限。
+ */
+const MAX_GPU_BYTES = 900 * 1024 * 1024;
+const MAX_LOADED = 600;
+const MAX_PARALLEL = 6;
 
 let renderer = null;
 let scene = null;
@@ -76,8 +85,32 @@ let upAxis = 'Y';
 const origin = new THREE.Vector3();
 /** 世界坐标 → 渲染坐标 的朝向修正（Z-up → Y-up） */
 const upFix = new THREE.Matrix4();
-/** nodeId -> { node, scene|null, loading, failed, lastUsed } */
+/** nodeId -> { node, scene|null, loading, failed, lastUsed, bytes } */
 const nodeState = new Map();
+/** 当前已上传到 GPU 的瓦片字节数合计（显存预算记账） */
+let gpuBytes = 0;
+
+/**
+ * 彻底释放一个瓦片占用的 GPU 资源。
+ *
+ * 只 dispose 几何体和材质是不够的：glTF 的贴图挂在材质上但需要单独
+ * dispose 纹理，否则显存不会真正回收——反复进出大模型时旧纹理堆积，
+ * 这是「大模型看着像内存泄漏」的常见原因。
+ */
+function releaseScene(scene) {
+  scene?.traverse?.((o) => {
+    o.geometry?.dispose?.();
+    const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    for (const m of mats) {
+      for (const key of Object.keys(m)) {
+        const v = m[key];
+        // 只处理贴图类（Texture 有 dispose 且带 image），避开颜色/矩阵等
+        if (v && typeof v.dispose === 'function' && v.isTexture) v.dispose();
+      }
+      m.dispose?.();
+    }
+  });
+}
 /** 当前这一帧需要显示的瓦片 */
 const desired = new Set();
 const queue = [];
@@ -113,7 +146,9 @@ function createLoader() {
   const loader = new GLTFLoader();
   if (!sharedDraco) {
     sharedDraco = new DRACOLoader();
-    sharedDraco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+    // 解码器随应用一起托管（public/draco/），不依赖 gstatic.com：
+    // 内网 / 政务外网环境访问不了 CDN，而且 CDN 抖动会拖垮整个解码链路。
+    sharedDraco.setDecoderPath('/draco/');
   }
   loader.setDRACOLoader(sharedDraco);
   return loader;
@@ -123,16 +158,19 @@ async function loadTile(uri) {
   const url = modelApi.assetSrc(props.modelId, uri);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`瓦片下载失败 ${res.status}`);
+  // 记账用压缩前的传输体积（同一量级，够做预算控制），拿不到就按 0 记
+  const bytes = Number(res.headers.get('content-length') || 0);
   const buf = await res.arrayBuffer();
   const loader = createLoader();
-  if (/\.b3dm$/i.test(uri)) {
-    const glb = extractGlbFromB3dm(buf);
-    return new Promise((resolve, reject) => loader.parse(glb, '', resolve, reject));
-  }
-  if (/\.glb$/i.test(uri)) {
-    return new Promise((resolve, reject) => loader.parse(buf, '', resolve, reject));
-  }
-  return new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
+  const parsed = /\.b3dm$/i.test(uri)
+    ? new Promise((resolve, reject) => loader.parse(extractGlbFromB3dm(buf), '', resolve, reject))
+    : /\.glb$/i.test(uri)
+      ? new Promise((resolve, reject) => loader.parse(buf, '', resolve, reject))
+      : new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
+  const gltf = await parsed;
+  // gltf 场景挂一个 bytes 字段，供显存预算与 HUD 展示使用
+  if (gltf?.scene) gltf.scene.userData.bytes = bytes;
+  return gltf;
 }
 
 function dirOf(p) {
@@ -346,22 +384,23 @@ function updateVisibility() {
     if (st.scene && !st.scene.parent) group.add(st.scene);
   }
 
-  // 缓存上限：淘汰最久没用到且当前不需要的
-  if (nodeState.size > MAX_LOADED) {
+  // 显存预算：超限就按最久未用淘汰（只淘汰当前不需要、且确有显存可回收的）
+  // 只控瓦片个数不够——瓦片体积差异巨大（0.5MB~20MB 都有），
+  // 600 个大瓦片一样能把堆内存顶到 1GB 以上，所以按字节记账才有硬上限。
+  if (gpuBytes > MAX_GPU_BYTES || nodeState.size > MAX_LOADED) {
     const victims = [...nodeState.entries()]
       .filter(([id, st]) => !desired.has(id) && st.scene)
-      .sort((a, b) => (a[1].lastUsed || 0) - (b[1].lastUsed || 0))
-      .slice(0, Math.max(0, nodeState.size - MAX_LOADED));
+      .sort((a, b) => (a[1].lastUsed || 0) - (b[1].lastUsed || 0));
     for (const [id, st] of victims) {
+      if (gpuBytes <= MAX_GPU_BYTES * 0.8 && nodeState.size <= MAX_LOADED) break;
       if (st.scene?.parent) group.remove(st.scene);
-      st.scene?.traverse?.((o) => {
-        if (o.geometry) o.geometry.dispose?.();
-        if (o.material) {
-          const mats = Array.isArray(o.material) ? o.material : [o.material];
-          mats.forEach((m) => m.dispose?.());
-        }
-      });
+      gpuBytes -= st.bytes || 0;
+      releaseScene(st.scene);
       st.scene = null;
+      st.bytes = 0;
+      st.failed = false;
+      // 释放后清出记账表：下次需要时会重新下载（几何/纹理本就在 GPU 上，
+      // 留着 nodeState 引用只是让已释放的资源看起来还在）
       nodeState.delete(id);
     }
   }
@@ -374,8 +413,14 @@ function refreshStage() {
   const shown = [...desired].filter((id) => nodeState.get(id)?.scene).length;
   desiredCount.value = desired.size;
   loadedCount.value = shown;
-  stage.value = queue.length || active ? `正在加载更精细的瓦片…（已显示 ${shown} / ${desired.size}）` : '';
-  if (!queue.length && !active) updateBounds();
+  const busy = queue.length || active;
+  // 把显存占用也摆出来：大模型加载慢时用户最容易怀疑「卡死」，
+  // 给出「已显示 N/M · 显存 xx MB」比一个转圈有用得多。
+  const mem = gpuBytes > 1024 * 1024 ? `${(gpuBytes / 1024 / 1024).toFixed(0)} MB` : `${Math.round(gpuBytes / 1024)} KB`;
+  stage.value = busy
+    ? `正在加载更精细的瓦片…（已显示 ${shown} / ${desired.size} · 显存 ${mem}）`
+    : '';
+  if (!busy) updateBounds();
 }
 
 /** 稳定的时候量一次包围盒：中心应接近原点（ECEF 大坐标已平移掉） */
@@ -410,6 +455,8 @@ function pump() {
         // 瓦片内容按自身 transform 落到世界坐标（ECEF）；Z-up→Y-up 由外层 world 统一处理
         obj.applyMatrix4(node.matrix);
         st.scene = obj;
+        st.bytes = obj.userData.bytes || 0;
+        gpuBytes += st.bytes;
         st.lastUsed = frameCount;
         if (desired.has(node.id)) group.add(obj);
         pump();
@@ -533,6 +580,13 @@ async function build() {
   }
   const data = r.data || {};
 
+  // 二维模型不在这里渲染（走 Raster2DViewer 的瓦片层），直接退回预览图
+  if (data.raster2d) {
+    mode.value = 'image';
+    stage.value = '';
+    return;
+  }
+
   const roots = pickRoots(data);
   tilesetCache.clear();
   await fetchTilesets((data.tilesets || []).length ? data.tilesets : roots);
@@ -636,13 +690,28 @@ function dispose() {
   frameId = 0;
   if (ro) ro.disconnect();
   ro = null;
+  // 关键：把还挂在场景里的瓦片逐个 releaseScene，
+  // 只 renderer.dispose() 不会回收几何体/纹理/显存，
+  // 来回切几个大模型就会把浏览器内存吃满（表现就是越用越卡、最后白屏）。
+  let freed = 0;
+  for (const [, st] of nodeState) {
+    if (st.scene) {
+      releaseScene(st.scene);
+      freed += 1;
+    }
+  }
   nodeState.clear();
+  gpuBytes = 0;
   desired.clear();
   queue.length = 0;
   active = 0;
   tree = null;
+  if (freed) console.info(`[ModelViewer] 已释放 ${freed} 个瓦片的 GPU 资源`);
   if (renderer) {
     renderer.dispose();
+    // forceContextLoss：让浏览器立刻归还 WebGL 上下文占用的显存，
+    // 否则关闭抽屉后显存要等 GC 才回收
+    renderer.forceContextLoss?.();
     renderer.domElement.remove();
   }
   renderer = null;
