@@ -3,7 +3,7 @@
  * 对接司空 2 OpenAPI /openapi/v0.1/model
  *
  * 三维预览链路：
- *   /model            → 项目模型列表
+ *   /model            → 组织模型列表（跨项目聚合）
  *   /model/:id        → 模型详情（含 preview_url / url）
  *   /model/:id/preview→ 预览图代理（直链带签名会过期，浏览器直连经常裂图）
  *   /model/:id/files  → 下载并解压模型包，返回包内文件清单（前端据此挑 b3dm/glb 渲染）
@@ -121,10 +121,57 @@ function cdnFailMessage(label, status, err) {
   return `${base}（${err.code || '未知'}${err.reason ? ' · ' + err.reason : ''}）`;
 }
 
-/** 获取项目下的模型列表 */
+/**
+ * 获取组织全量模型列表（跨项目聚合）
+ *
+ * ⚠️ 司空 2 的 /model 接口按 X-Project-Uuid 返回**当前项目**的模型。
+ *    但模型库是运营视角：当前项目没有设备 / 没建模，不代表组织里没有模型。
+ *    这里遍历组织全部项目逐个拉取后合并，并在每个模型上标注所属项目。
+ *    单个项目拉取失败不拖垮整体（比如某项目无模型权限），失败明细放在 data.errors。
+ *    结果缓存 60s；「刷新」按钮带 ?refresh=1 强制重拉。
+ */
+let listCache = { ts: 0, data: null };
+const LIST_TTL = 60 * 1000;
+
 router.get('/', async (req, res) => {
-  const r = await request({ method: 'GET', path: '/model', tag: '模型库' });
-  res.json(r);
+  if (listCache.data && !req.query.refresh && Date.now() - listCache.ts < LIST_TTL) {
+    return res.json(listCache.data);
+  }
+  const prj = await request({
+    method: 'GET',
+    path: '/project',
+    query: { page: 1, page_size: 100 },
+    tag: '模型库',
+  });
+  const projects = (prj.ok && prj.data?.list) || [];
+  if (!prj.ok && !projects.length) {
+    // 项目列表都拿不到（TK 失效 / 网络）→ 退回旧行为：按当前项目拉一次，错误原样透出
+    const r = await request({ method: 'GET', path: '/model', tag: '模型库' });
+    return res.json({ ...r, message: r.ok ? r.message : r.message || prj.message || '项目列表获取失败' });
+  }
+  const merged = [];
+  const seen = new Set();
+  const errors = [];
+  for (const p of projects) {
+    const r = await request({ method: 'GET', path: '/model', projectUuid: p.uuid, tag: '模型库' });
+    if (r.ok) {
+      for (const m of r.data?.list || []) {
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        merged.push({ ...m, projectUuid: p.uuid, projectName: p.name });
+      }
+    } else {
+      errors.push({ projectUuid: p.uuid, projectName: p.name, message: r.message || `code ${r.code}` });
+    }
+  }
+  const data = {
+    ok: true,
+    code: 0,
+    message: errors.length ? `部分项目拉取失败：${errors.map((e) => `${e.projectName}（${e.message}）`).join('、')}` : '',
+    data: { list: merged, total: merged.length, errors },
+  };
+  listCache = { ts: Date.now(), data };
+  res.json(data);
 });
 
 /** 模型详情 */
