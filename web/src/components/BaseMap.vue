@@ -127,6 +127,10 @@ function iconHtml(m) {
   if (m.type === 'home') {
     return `<div style="width:22px;height:22px;border-radius:50%;background:#ffb020;border:2px solid #ffffff;display:grid;place-items:center;color:#1a1200;font-size:11px;font-weight:700;${shadow}">H</div>`;
   }
+  // 问题点（工单详情等业务场景）：橙色圆点 + 白描边，深浅底图都清晰
+  if (m.type === 'point') {
+    return `<div style="width:14px;height:14px;border-radius:50%;background:#ff6a00;border:2px solid #ffffff;box-shadow:0 1px 4px rgba(0,0,0,.55)"></div>`;
+  }
   // 机巢：用 Dock 3 实拍图做标记。
   // 白色机身直接放上去在浅色底图（高德矢量）上几乎看不见，
   // 所以垫一层深色圆盘 + 白描边，保证深浅底图都清晰；离线时整体转灰降透明。
@@ -179,7 +183,7 @@ function drawLayers() {
     const ll = toMapLatLng(m.lat, m.lng, base.crs);
     if (!ll) continue;
     // 机巢用实拍图，需要比默认图标更大的画布才看得清；飞行器/家点仍用 30px
-    const size = m.type === 'airport' ? 42 : 30;
+    const size = m.type === 'airport' ? 42 : m.type === 'point' ? 16 : 30;
     const marker = L.marker(ll, {
       icon: L.divIcon({
         html: iconHtml(m),

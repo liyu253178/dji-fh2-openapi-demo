@@ -13,16 +13,15 @@
       <span class="op">{{ l.operator || '—' }}</span>
     </div>
 
-    <!-- 未来可推进：灰虚线（allowedTransitions 由后端给出，前端不硬编码） -->
+    <!-- 未来可推进：灰虚线提示 -->
     <div v-if="allowed.length" class="row future">
       <span class="dot ghost" />
       <div class="body">
-        <p class="tip">可推进（来自后端 allowedTransitions，前端不硬编码）</p>
+        <p class="tip">可推进到以下状态</p>
         <div class="btns">
           <span v-for="t in allowed" :key="t" class="ghost-btn">
             {{ labelOf(t) }}
-            <em>· {{ hintOf(t) }}</em>
-            <i v-if="t === 'rejected'">= 4环「不成立」是佐证分叉</i>
+            <em v-if="hintOf(t)">· {{ hintOf(t) }}</em>
           </span>
         </div>
       </div>
@@ -53,9 +52,9 @@ const LABEL = {
 const HINT = {
   accepted: '确认「属地 · 联系人 · 邮件地址已收到」',
   processing: '确认「开始现场核查」',
-  submitted: '确认「已上传整改完成整改」',
+  submitted: '确认「整改完成并上传佐证」',
   rejected: '附「不成立」理由，退回审核员',
-  dispatched: '含 3 件 / 邮件待发',
+  dispatched: '邮件发送给责任单位',
   cancelled: '作废需填原因',
 };
 
