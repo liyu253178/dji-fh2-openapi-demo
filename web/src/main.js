@@ -7,12 +7,14 @@ import 'leaflet/dist/leaflet.css';
 
 import App from './App.vue';
 import router from './router';
+import { countUp } from './directives/countUp';
 import './styles/main.css';
 
 const app = createApp(App);
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component);
 }
+app.directive('count', countUp);
 app.use(createPinia());
 app.use(router);
 app.use(ElementPlus, { size: 'default' });

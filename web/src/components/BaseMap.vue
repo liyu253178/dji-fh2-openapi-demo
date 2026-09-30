@@ -89,6 +89,8 @@ const props = defineProps({
   markers: { type: Array, default: () => [] },
   /** [{name, points:[[lat,lng],...], color, dashed}] */
   polylines: { type: Array, default: () => [] },
+  /** [{ lat, lng, radius(米), color, name }] 覆盖范围圈（如机巢作业半径） */
+  circles: { type: Array, default: () => [] },
   center: { type: Array, default: null },
   zoom: { type: Number, default: 15 },
   autoFit: { type: Boolean, default: true },
@@ -105,6 +107,7 @@ let map = null;
 let baseLayer = null;
 let markerLayer = null;
 let lineLayer = null;
+let circleLayer = null;
 let ro = null;
 
 const hasAnyPoint = computed(() => props.markers.some((m) => m.lat && m.lng));
@@ -161,6 +164,7 @@ function drawLayers() {
   const base = currentBase();
   if (markerLayer) markerLayer.clearLayers();
   if (lineLayer) lineLayer.clearLayers();
+  if (circleLayer) circleLayer.clearLayers();
 
   const all = (props.markers || []).filter((m) => toMapLatLng(m.lat, m.lng, base.crs));
   const airports = all.filter((m) => m.type === 'airport');
@@ -182,16 +186,16 @@ function drawLayers() {
   for (const m of drawable) {
     const ll = toMapLatLng(m.lat, m.lng, base.crs);
     if (!ll) continue;
-    // 机巢用实拍图，需要比默认图标更大的画布才看得清；飞行器/家点仍用 30px
-    const size = m.type === 'airport' ? 42 : m.type === 'point' ? 16 : 30;
-    const marker = L.marker(ll, {
-      icon: L.divIcon({
-        html: iconHtml(m),
-        className: 'fh2-marker',
-        iconSize: [size, size],
-        iconAnchor: [size / 2, size / 2],
-      }),
-    });
+  // 机巢用实拍图，需要比默认图标更大的画布才看得清；飞行器/家点仍用 30px
+  const size = m.type === 'airport' ? 44 : m.type === 'point' ? 16 : 30;
+  const marker = L.marker(ll, {
+    icon: L.divIcon({
+      html: iconHtml(m),
+      className: m.type === 'airport' ? 'fh2-marker fh2-marker-airport' : 'fh2-marker',
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+    }),
+  });
     const rows = [
       `<b>${m.name || m.sn || ''}</b>`,
       m.sn ? `SN: ${m.sn}` : '',
@@ -221,6 +225,24 @@ function drawLayers() {
     if (line.name) pl.bindTooltip(line.name);
     pl.addTo(lineLayer);
     bounds = bounds ? bounds.extend(L.latLngBounds(pts)) : L.latLngBounds(pts);
+  }
+
+  // 覆盖范围圈（如机巢作业半径）：虚线描边 + 半透明填充
+  for (const c of props.circles || []) {
+    const ll = toMapLatLng(c.lat, c.lng, base.crs);
+    if (!ll || !c.radius) continue;
+    const ring = L.circle(ll, {
+      radius: c.radius,
+      color: c.color || '#4a8cff',
+      weight: 1.5,
+      opacity: 0.75,
+      fillColor: c.color || '#4a8cff',
+      fillOpacity: 0.07,
+      dashArray: '5,6',
+      interactive: false,
+    });
+    if (c.name) ring.bindTooltip(`${c.name} · 半径 ${(c.radius / 1000).toFixed(1)} km`, { sticky: true });
+    ring.addTo(circleLayer);
   }
 
   if (bounds && props.autoFit && (props.markers.length > 1 || props.polylines.length)) {
@@ -262,6 +284,8 @@ onMounted(async () => {
   });
   markerLayer = L.layerGroup().addTo(map);
   lineLayer = L.layerGroup().addTo(map);
+  circleLayer = L.layerGroup().addTo(map);
+  circleLayer = L.layerGroup().addTo(map);
   switchBase(b);
 
   // 容器尺寸变化自动重算，避免地图组件“丢失/空白”
@@ -277,7 +301,7 @@ onBeforeUnmount(() => {
   if (map) map.remove();
 });
 
-watch(() => [props.markers, props.polylines], () => drawLayers(), { deep: true });
+watch(() => [props.markers, props.polylines, props.circles], () => drawLayers(), { deep: true });
 watch(
   () => props.center,
   (c) => c && map && map.setView(c, props.zoom)
@@ -324,6 +348,39 @@ defineExpose({
   width: 10px; height: 10px; border-radius: 50%;
   border: 1.5px solid #fff;
   box-sizing: border-box;
+}
+
+/* 在线机巢：外圈呼吸光环 + 状态点脉冲。
+   离线时机位不发光（灰点常亮），避免「看着像有戏但其实飞不了」。
+   光环挂在 .fh2-marker-airport（divIcon 的 className）上，图标本身不参与动画，
+   避免 transform 动画与 Leaflet 的定位 transform 打架。 */
+.fh2-marker-airport { background: transparent; border: none; }
+.fh2-marker-airport::before {
+  content: '';
+  position: absolute; left: 50%; top: 50%;
+  width: 44px; height: 44px;
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(53, 208, 127, 0.55);
+  animation: mk-pulse 2.6s cubic-bezier(0.2, 0.6, 0.35, 1) infinite;
+  pointer-events: none;
+}
+.fh2-marker-airport .mk-dot {
+  animation: mk-blink 1.8s ease-in-out infinite;
+}
+@keyframes mk-pulse {
+  0%   { transform: scale(0.62); opacity: 0.9; }
+  70%  { transform: scale(1.5);  opacity: 0; }
+  100% { transform: scale(1.5);  opacity: 0; }
+}
+@keyframes mk-blink {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(53, 208, 127, 0.55); }
+  50%      { opacity: 0.55; box-shadow: 0 0 0 5px rgba(53, 208, 127, 0); }
+}
+/* 尊重系统的「减少动态效果」设置：关掉动画但保留静态光环轮廓 */
+@media (prefers-reduced-motion: reduce) {
+  .fh2-marker-airport::before,
+  .fh2-marker-airport .mk-dot { animation: none; }
 }
 .leaflet-tooltip {
   background: rgba(13, 21, 38, 0.95);
