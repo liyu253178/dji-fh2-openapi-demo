@@ -99,9 +99,9 @@
                 v-if="row.status === 'draft'"
                 size="small"
                 type="primary"
-                @click.stop="send(row)"
+                @click.stop="row.recipientId ? send(row) : openDispatch(row)"
               >
-                发送
+                {{ row.recipientId ? '发送' : '去派发' }}
               </el-button>
             </template>
           </el-table-column>
@@ -126,6 +126,7 @@
     <DispatchDialog
       v-model:visible="dispatchVisible"
       :patches="dispatchPatches"
+      :ticket="dispatchTicket"
       @sent="load(1)"
     />
   </div>
@@ -170,6 +171,8 @@ const refreshing = ref(false);
 const error = ref('');
 const dispatchVisible = ref(false);
 const dispatchPatches = ref([]);
+/** 草稿工单派发模式：把这一行走 DispatchDialog 的 ticket 分支（patches 与 ticket 互斥） */
+const dispatchTicket = ref(null);
 
 const q = reactive({ status: '', issueType: '', adminRegion: '', range: '30', overdue: false });
 
@@ -245,7 +248,18 @@ function onReset() {
 function open(row) {
   router.push(`/tickets/${row.id}`);
 }
+/** 草稿工单还没有派发对象时，在列表这里直接补选对象再派发 */
+function openDispatch(row) {
+  dispatchPatches.value = [];
+  dispatchTicket.value = row;
+  dispatchVisible.value = true;
+}
+
 async function send(row) {
+  if (!row.recipientId) {
+    openDispatch(row);
+    return;
+  }
   try {
     await ElMessageBox.confirm(`确认派发工单 ${row.ticketNo}？邮件将发送至 ${row.recipientName || '收件对象'}`, '派发确认', {
       type: 'info',

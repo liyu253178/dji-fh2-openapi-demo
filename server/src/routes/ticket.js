@@ -122,7 +122,7 @@ router.post('/:id/send', (req, res) => {
     if (!c.ok) return fail(res, { code: 40001, message: c.message, allowed: c.allowed });
   }
   if (!t.recipientId) {
-    return res.status(400).json({ code: 40031, message: '请先在工单详情中设置派发对象' });
+    return res.status(400).json({ code: 40031, message: '该工单还没选派发对象：请先在工单列表点「去派发」选择对象' });
   }
   const recipient = dictRepo.getRecipient(t.recipientId);
   if (!recipient || !recipient.email) {

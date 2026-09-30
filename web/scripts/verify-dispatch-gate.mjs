@@ -1,9 +1,12 @@
 /**
- * 派发门槛验收：位置描述 / 估算面积留空时，仍应能保存图斑并生成工单
+ * 派发流程验收：审核影像只生成「工单草稿」，派发对象在工单列表 выбор好后才派发
  *
- * 背景：位置描述改选填后，派单侧（ticketRepo.createFromPatch）仍在强制位置描述
- * 与 require_area 面积，UI 上表现为「请先填写位置描述」。本脚本走真实 UI 路径
- * 复现用户操作，断言两道门槛都已撤掉。
+ * 背景 1：位置描述 / 估算面积改选填后，派单侧（ticketRepo.createFromPatch）曾仍在
+ *   强制这两项，UI 表现为「请先填写位置描述」。本脚本断言两道门槛都已撤掉。
+ * 背景 2：正确的业务流程是「审核影像 → 发现问题 → 生成工单草稿 → 在草稿里选
+ *   好派发对象再派发」。曾出现过 status=dispatched 但 recipient_id 为空的脏数据
+ *   （没有派发人却显示派发成功）。本脚本断言：审核出来的工单是 draft 且不带
+ *   派发对象，列表草稿行的按钮是「去派发」而不是「发送」。
  *
  * 依赖：playwright-core + 系统 Chrome；找不到就跳过（退出码 0）。
  * 会真实创建 1 个图斑 + 1 张工单，结束后从库里清理掉，不留脏数据。
@@ -74,12 +77,15 @@ p.on('response', async (r) => {
   net.push({ url: r.url(), status: r.status(), body });
 });
 
-const taskUuid = await p.evaluate(async (base) => {
-  const j = await fetch(`${base}/api/asset/tasks?pageSize=100`).then((r) => r.json());
-  const list = j?.data?.list || [];
-  const hit = list.find((t) => (t.imageCount || 0) > 0);
-  return hit ? hit.taskUuid : '';
-}, BASE);
+// ⚠️ 在尚未导航的 about:blank 页里 fetch 会被浏览器拦掉（Failed to fetch），
+//    这里一律走 Node 侧；代理会让 Node fetch 打不到本机，用 curl --noproxy 兜住
+const { execFileSync } = await import('node:child_process');
+const jget = (u) =>
+  JSON.parse(execFileSync('curl', ['-s', '--noproxy', '*', '-m', '20', u], { encoding: 'utf8' }));
+
+const listJson = jget(`${BASE}/api/asset/tasks?pageSize=100`);
+const list = listJson?.data?.list || [];
+const taskUuid = (list.find((t) => (t.imageCount || 0) > 0) || {}).taskUuid || '';
 if (!taskUuid) {
   console.log('⏭  跳过：当前没有可用于验证的影像架次');
   await b.close();
@@ -223,10 +229,27 @@ const ticketRes = net.find((x) => x.url.includes('/api/tickets'));
 const patchOk = patchRes?.body?.code === 0 && !!patchRes?.body?.data?.patchId;
 const ticketOk = ticketRes?.body?.code === 0 && !!ticketRes?.body?.data?.ticketId;
 ok('图斑保存成功', patchOk, s(patchRes?.body) || '未捕获到 POST /api/review/patches');
-ok('工单创建成功（未被拦下）', ticketOk, s(ticketRes?.body) || '未捕获到 POST /api/tickets');
-ok('提示为「已创建」', joined.includes('已创建'), joined.slice(0, 120));
+ok('工单草稿创建成功（未被拦下）', ticketOk, s(ticketRes?.body) || '未捕获到 POST /api/tickets');
+ok('提示为草稿 + 引导去派发', joined.includes('已生成工单草稿') && joined.includes('派发'), joined.slice(0, 160));
 ok('不再提示「请先填写位置描述」', !joined.includes('位置描述'), joined.slice(0, 160));
 ok('不再提示「面积」相关拦截', !joined.includes('面积'), joined.slice(0, 160));
+
+// 5) 审核出来的必须是「草稿」，且没有自动带派发对象
+const newId = ticketRes?.body?.data?.ticketId || 0;
+const tt = jget(`${BASE}/api/tickets/${newId}`)?.data?.ticket || null;
+ok('审核生成的工单是草稿', tt?.status === 'draft', `status=${tt?.status}`);
+ok('草稿未自动带派发对象', tt?.recipientId == null, `recipientId=${tt?.recipientId}`);
+ok('草稿未写 dispatched_at', !tt?.dispatchedAt, `dispatchedAt=${tt?.dispatchedAt}`);
+
+// 6) 工单列表：未选对象的草稿行是「去派发」，不是直接「发送」
+await p.goto(`${BASE}/tickets`, { waitUntil: 'networkidle', timeout: 40000 });
+await p.waitForSelector('.el-table__row', { timeout: 20000 }).catch(() => {});
+const btns = await p.evaluate(() =>
+  Array.from(document.querySelectorAll('.el-table__row button')).map((x) => x.innerText.trim())
+);
+ok('草稿行出现「去派发」按钮', btns.includes('去派发'), JSON.stringify(btns.slice(0, 8)));
+ok('无派发对象的行不再显示「发送」', !btns.includes('发送'), JSON.stringify(btns.slice(0, 8)));
+
 ok('控制台 0 错误', errs.length === 0, errs.slice(0, 2).join(' | '));
 
 await b.close();

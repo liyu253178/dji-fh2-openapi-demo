@@ -7,7 +7,7 @@
     @update:model-value="$emit('update:visible', $event)"
   >
     <template v-if="stage === 'config'">
-      <p class="cnt">已选 {{ patches.length }} 个图斑</p>
+      <p class="cnt">{{ ticket ? `工单 ${ticket.ticketNo}（草稿）` : `已选 ${patches.length} 个图斑` }}</p>
       <el-form label-width="80px" label-position="left">
         <el-form-item label="收件对象" required>
           <el-select v-model="recipientId" placeholder="选择派发对象" style="width: 100%">
@@ -80,7 +80,7 @@
 </template>
 
 <script setup>
-/** 派发对话框：选收件对象 → 预览 → 入队发送 */
+/** 派发对话框：两种入口 —— ① 图斑直接建单派发（patches）② 工单草稿补选派发对象后派发（ticket） */
 import { ref, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ticketApi, notifyApi, dictApi } from '../../api/duav';
@@ -88,6 +88,8 @@ import { ticketApi, notifyApi, dictApi } from '../../api/duav';
 const props = defineProps({
   visible: { type: Boolean, default: false },
   patches: { type: Array, default: () => [] },
+  /** 草稿工单模式：传入工单对象（含 id/ticketNo/patchId/issueTypeName/deadline） */
+  ticket: { type: Object, default: null },
 });
 const emit = defineEmits(['update:visible', 'sent']);
 
@@ -101,11 +103,14 @@ const sending = ref(false);
 const previewHtml = ref('');
 const ticketId = ref(0);
 
-const patchId = computed(() => props.patches[0]?.patchId || 0);
+const patchId = computed(() => props.ticket?.patchId || props.patches[0]?.patchId || 0);
 const currentRecipient = computed(() => recipients.value.find((r) => r.id === recipientId.value) || null);
 const canSend = computed(() => !!recipientId.value && !!patchId.value);
 
 const subjectPreview = computed(() => {
+  if (props.ticket) {
+    return `【低空巡查问题线索】${props.ticket.issueTypeName || ''}（限期 ${String(props.ticket.deadline || '').slice(0, 10) || '7 天'}）`;
+  }
   const p = props.patches[0];
   if (!p) return '—';
   return `【低空巡查问题线索】${p.adminRegion || ''}${p.issueTypeName || ''}（限期 7 天）`;
@@ -118,13 +123,30 @@ watch(
     stage.value = 'config';
     ticketId.value = 0;
     previewHtml.value = '';
+    // 每次打开都从空白开始；草稿工单若已带对象则回填
+    recipientId.value = props.ticket?.recipientId || null;
+    assignedTo.value = props.ticket?.assignedTo || '';
+    contact.value = props.ticket?.contact || '';
     const [r, m] = await Promise.all([dictApi.recipients(), notifyApi.config()]);
     if (r.ok) recipients.value = r.data || [];
     if (m.ok) mailConfigured.value = !!m.data.configured;
   }
 );
 
+/** 草稿工单模式：先把派发对象落到工单上，再走入队 */
 async function ensureTicket() {
+  if (props.ticket) {
+    const r = await ticketApi.setRecipient(props.ticket.id, {
+      recipientId: recipientId.value,
+      assignedTo: assignedTo.value || null,
+      contact: contact.value || null,
+    });
+    if (!r.ok) {
+      ElMessage.error(r.message || '派发对象设置失败');
+      return 0;
+    }
+    return props.ticket.id;
+  }
   if (ticketId.value) return ticketId.value;
   const t = await ticketApi.create({
     patchId: patchId.value,
