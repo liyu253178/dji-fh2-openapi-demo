@@ -137,6 +137,20 @@ export const modelApi = {
   /** 单文件读取地址（b3dm / glb / tileset.json） */
   assetSrc: (id, p) =>
     `/api/model/${encodeURIComponent(id)}/asset?path=${encodeURIComponent(p)}`,
+  /**
+   * 瓦片模板地址（二维影像金字塔用）
+   *
+   * 不能直接复用 assetSrc：它对整个 path 做 encodeURIComponent，
+   * 会把 {z}/{x}/{y} 变成 %7Bz%7D…，Leaflet 的模板替换就失效了（请求 404）。
+   * 所以这里只编码「前缀 + 根目录」，占位符原样保留。
+   */
+  tileSrc: (id, template) => {
+    const i = template.indexOf('{z}');
+    const prefix = i >= 0 ? template.slice(0, i) : template;
+    const tpl = i >= 0 ? template.slice(i) : '';
+    // 前缀末尾的 '/' 由 {z} 接管，避免拼出 double slash
+    return `/api/model/${encodeURIComponent(id)}/asset?path=${encodeURIComponent(prefix)}${tpl}`;
+  },
   /** 预览图（走后端代理，避免签名过期/跨域裂图） */
   previewSrc: (id) => `/api/model/${encodeURIComponent(id)}/preview`,
   /** 模型包下载地址（走后端代理，带原始文件名） */

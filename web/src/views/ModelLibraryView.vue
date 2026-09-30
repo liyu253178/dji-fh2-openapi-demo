@@ -41,7 +41,7 @@
             <span v-else class="tag ok">可用</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button
               size="small"
@@ -50,7 +50,7 @@
               :disabled="checkState[row.id]?.state === 'bad'"
               @click="openViewer(row)"
             >
-              三维预览
+              {{ row.file_type === 'model_3d' ? '三维预览' : '二维预览' }}
             </el-button>
           </template>
         </el-table-column>
@@ -82,13 +82,16 @@
           description="该包大于 300 MB，已自动退回预览图；需要完整模型请点「下载模型包」后用专业软件打开。"
         />
 
-        <!-- 三维窗口：能渲染就渲染真实模型，不能渲染时退回预览图 -->
+        <!-- 预览窗口：3D 走 b3dm/glb 渲染，2D 走正射影像瓦片金字塔 -->
         <div class="viewer-box">
-          <ModelViewer
-            v-if="viewerVisible && current?.id && curCheck?.state !== 'bad' && curCheck?.state !== 'over'"
-            :model-id="current.id"
-            :model-name="current.name"
-          />
+          <template v-if="viewerVisible && current?.id && curCheck?.state !== 'bad' && curCheck?.state !== 'over'">
+            <Raster2DViewer
+              v-if="is2d"
+              :model-id="current.id"
+              :model-name="current.name"
+            />
+            <ModelViewer v-else :model-id="current.id" :model-name="current.name" />
+          </template>
           <img v-else :src="previewSrc" alt="预览图" class="preview-fallback" />
         </div>
 
@@ -113,7 +116,12 @@
           <el-button size="small" tag="a" :href="previewSrc" target="_blank">查看预览图</el-button>
         </div>
         <div class="muted small">
-          三维窗口由模型包内的 b3dm / glb 直接渲染；若模型包过大或仍在压缩，会自动退回预览图。
+          <template v-if="is2d">
+            二维模型为正射影像瓦片金字塔（{z}/{x}/{y}.png，WGS84），按 Leaflet 瓦片层渲染，可缩放查看整幅成果。
+          </template>
+          <template v-else>
+            三维窗口由模型包内的 b3dm / glb 直接渲染；若模型包过大或仍在压缩，会自动退回预览图。
+          </template>
         </div>
       </div>
     </el-drawer>
@@ -125,6 +133,7 @@ import { ref, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
 import { modelApi, errMsg } from '../api/dji';
 import ModelViewer from '../components/ModelViewer.vue';
+import Raster2DViewer from '../components/Raster2DViewer.vue';
 
 const list = ref([]);
 const loading = ref(false);
@@ -135,6 +144,8 @@ const checkState = ref({});
 const curCheck = computed(() => (current.value ? checkState.value[current.value.id] : null));
 /** 组织里拉取失败的项目数（单项目失败不影响其它项目展示） */
 const failedCount = ref(0);
+/** 二维模型走影像瓦片渲染，三维走 b3dm/glb —— 两者包内结构完全不同 */
+const is2d = computed(() => current.value?.file_type === 'model_2d');
 
 const packageSrc = computed(() =>
   current.value?.id ? modelApi.packageSrc(current.value.id, current.value.name) : ''

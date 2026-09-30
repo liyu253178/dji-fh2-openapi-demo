@@ -255,6 +255,91 @@ async function resolveTilesets(dir, files) {
   };
 }
 
+/**
+ * 识别「二维模型」= 正射影像瓦片金字塔（大疆测绘建图产物）
+ *
+ * 典型包结构（实测）：model/download/{z}/{x}/{y}.png，256px 瓦片，
+ * 层级 z=12…23，x/y 就是标准 Web Mercator XYZ 行列号
+ * （按 gps corner 反算的 x/y 范围与实际文件名逐一吻合），
+ * 配套 report/map_report.json 里带 "GCJ tiles":false 表示瓦片是 WGS84。
+ *
+ * 这类模型没有 tileset.json / b3dm / glb，三维渲染器完全用不上，
+ * 必须单独识别出来按二维瓦片金字塔渲染，否则只能退回预览图。
+ */
+function resolveRaster2d(dir, files) {
+  const raster = files.filter((f) => /\.png$/i.test(f.path) && /\/(\d+)\/(\d+)\/(\d+)\.png$/.test(f.path));
+  if (raster.length < 4) return null;
+  /** z -> { min, max, n } */
+  const levels = new Map();
+  let samplePath = '';
+  for (const f of raster) {
+    const m = f.path.match(/\/(\d+)\/(\d+)\/(\d+)\.png$/);
+    if (!m) continue;
+    const z = Number(m[1]);
+    if (!levels.has(z)) levels.set(z, { z, minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, n: 0 });
+    const lv = levels.get(z);
+    const x = Number(m[2]);
+    const y = Number(m[3]);
+    lv.minX = Math.min(lv.minX, x);
+    lv.maxX = Math.max(lv.maxX, x);
+    lv.minY = Math.min(lv.minY, y);
+    lv.maxY = Math.max(lv.maxY, y);
+    lv.n += 1;
+    if (!samplePath) samplePath = f.path;
+  }
+  if (!levels.size) return null;
+  const zs = [...levels.keys()].sort((a, b) => a - b);
+  const deepest = levels.get(zs[zs.length - 1]);
+  // 瓦片根目录：从样例路径剥掉尾部 {z}/{x}/{y}.png（样例本身就在这一层里）
+  const base = samplePath.replace(/\d+\/\d+\/\d+\.png$/, '').replace(/\/$/, '');
+  return {
+    kind: 'raster2d',
+    // 瓦片根目录（前端按 base/{z}/{x}/{y}.png 拼路径）
+    base,
+    minLevel: zs[0],
+    maxLevel: zs[zs.length - 1],
+    tileCount: raster.length,
+    // 覆盖范围（用最深层的行列号反推经纬度矩形）
+    minX: deepest.minX,
+    maxX: deepest.maxX,
+    minY: deepest.minY,
+    maxY: deepest.maxY,
+    gcjTiles: null, // 由 report 补齐
+  };
+}
+
+/**
+ * 读建图报告 map_report.json，补齐坐标系 / 层级 / 四角经纬度。
+ * 报告不一定在包根（实测在 model/download/report/ 下），按清单里的实际路径找。
+ */
+async function readMapReport(dir, files) {
+  const cand = (files || [])
+    .map((f) => f.path)
+    .filter((p) => /(^|\/)map_report\.json$/i.test(p));
+  for (const c of cand) {
+    try {
+      const raw = await fsp.readFile(path.join(dir, c), 'utf8');
+      const j = JSON.parse(raw);
+      const g = j['gps corner'] || j.gpsCorner || j.gps_corner;
+      const pick = (a, b) => {
+        const v = g?.[a] ?? g?.[b];
+        return typeof v === 'number' ? v : null;
+      };
+      return {
+        gcjTiles: j['GCJ tiles'] === true || j.gcj_tiles === true,
+        gsd: j['TDOM GSD'] ?? null,
+        reportMinLevel: j['map tile']?.['minimum level'] ?? null,
+        reportMaxLevel: j['map tile']?.['maximum level'] ?? null,
+        topLeft: { lat: pick('top left lat', 'topLeftLat'), lon: pick('top left lon', 'topLeftLon') },
+        bottomRight: { lat: pick('bottom right lat', 'bottomRightLat'), lon: pick('bottom right lon', 'bottomRightLon') },
+      };
+    } catch {
+      /* 报告读不动就只用行列号推算范围 */
+    }
+  }
+  return null;
+}
+
 /** 模型包下载 + 解压，返回文件清单 */
 router.get('/:id/files', async (req, res) => {
   const id = String(req.params.id);
@@ -263,12 +348,16 @@ router.get('/:id/files', async (req, res) => {
   try {
     if (fs.existsSync(manifestPath)) {
       const m = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
-      // 老版本清单没有 tilesets / tilesetRoots，就地补算（文件已在磁盘，不用重新下包）
+      // 老版本清单没有 tilesets / tilesetRoots / raster2d，就地补算（文件已在磁盘，不用重新下包）
       if (!m.tilesets) {
         const ts = await resolveTilesets(dir, m.files || []);
         m.tileset = ts.tileset;
         m.tilesets = ts.tilesets;
         m.tilesetRoots = ts.tilesetRoots;
+      }
+      if (m.raster2d === undefined) {
+        const r2 = resolveRaster2d(dir, m.files || []);
+        m.raster2d = r2 ? { ...r2, ...(await readMapReport(dir, m.files) || {}) } : null;
         await fsp.writeFile(manifestPath, JSON.stringify(m));
       }
       return res.json({ ok: true, data: m });
@@ -329,6 +418,7 @@ router.get('/:id/files', async (req, res) => {
     const ts = await resolveTilesets(dir, files);
     const b3dm = files.filter((f) => /\.b3dm$/i.test(f.path));
     const gltf = files.filter((f) => /\.(glb|gltf)$/i.test(f.path));
+    const r2 = resolveRaster2d(dir, files);
     const manifest = {
       files,
       tileset: ts.tileset,
@@ -336,11 +426,15 @@ router.get('/:id/files', async (req, res) => {
       tilesetRoots: ts.tilesetRoots,
       b3dm: b3dm.map((f) => f.path),
       gltf: gltf.map((f) => f.path),
+      // 二维模型（正射影像金字塔）：没有 tileset，靠这个字段走瓦片渲染
+      raster2d: r2 ? { ...r2, ...(await readMapReport(dir, files) || {}) } : null,
     };
     await fsp.writeFile(manifestPath, JSON.stringify(manifest));
     log.ok(
       '模型库',
-      `模型包已解压 id=${id} 文件 ${files.length} 个（b3dm ${b3dm.length} / tileset ${ts.tilesets.length}，根 ${ts.tilesetRoots.length}）`
+      `模型包已解压 id=${id} 文件 ${files.length} 个（b3dm ${b3dm.length} / tileset ${ts.tilesets.length}，根 ${ts.tilesetRoots.length}${
+        r2 ? ` / 二维瓦片 ${r2.tileCount} 张 z${r2.minLevel}-${r2.maxLevel}` : ''
+      }）`
     );
     res.json({ ok: true, data: manifest });
   } catch (e) {
