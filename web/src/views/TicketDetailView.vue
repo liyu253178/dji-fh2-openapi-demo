@@ -24,14 +24,15 @@
         <div class="blk">
           <h4>位置</h4>
           <div class="map">
-            <div class="map-inner">
-              <div class="pt" :style="ptStyle" />
-              <span class="coord">{{ fmt(patch?.lat) }}, {{ fmt(patch?.lon) }}</span>
-            </div>
-            <p class="map-note">
-              Leaflet · zoomControl: false（缩放控件禁用，用自定义大按钮）
-            </p>
+            <BaseMap
+              v-if="patch"
+              :markers="mapMarkers"
+              :polylines="mapPolylines"
+              :center="[patch.lat, patch.lon]"
+              :zoom="16"
+            />
           </div>
+          <p class="hint">橙点为问题中心，橙框为标注范围 · 右上角可切换底图</p>
           <!-- 面积已不再展示：无人机航拍 GSD/相对高度误差大，估算面积会误导 -->
         </div>
 
@@ -70,18 +71,6 @@
               <span v-if="patch?.isPermanentFarmland" class="pf">涉及永久基本农田</span>
             </dd>
           </dl>
-          <div class="p2">
-            <p class="p2-h">二期自动接入</p>
-            <dl class="kv">
-              <dt>套合结果</dt>
-              <dd>—</dd>
-              <dt>置信度</dt>
-              <dd>—</dd>
-              <dt>依据数据版本</dt>
-              <dd>—</dd>
-            </dl>
-            <p class="hint">需求未填时显示为空框</p>
-          </div>
         </div>
       </div>
 
@@ -100,12 +89,12 @@
                 {{ m.status === 'sent' ? '✓' : '✗' }}
               </span>
               <div class="mb">
-                <div class="m1">
-                  <span class="mt">{{ fmt(m.sentAt || m.createdAt) }} {{ statusText(m.status) }}</span>
-                  <span v-if="m.sentAt && m.createdAt" class="cost">耗时 {{ costOf(m) }}</span>
-                </div>
-                <p class="m2">{{ m.recipientEmail }}<template v-if="m.recipientEmail"> · </template></p>
-                <p class="m2">附件 {{ m.attachmentCount }} 个<template v-if="m.attachmentCount"> · 1.2 MB</template></p>
+              <div class="m1">
+                <span class="mt">{{ fmtDate(m.sentAt || m.createdAt) }} {{ statusText(m.status) }}</span>
+                <span v-if="costOf(m)" class="cost">耗时 {{ costOf(m) }}</span>
+              </div>
+              <p class="m2">{{ m.recipientEmail }}</p>
+              <p v-if="m.attachmentCount" class="m2">附件 {{ m.attachmentCount }} 个</p>
                 <p v-if="m.error" class="m3">{{ m.error }}</p>
                 <el-button v-if="m.status !== 'sent'" size="small" text type="primary" @click="retryMail(m)">
                   重试
@@ -137,7 +126,7 @@
             >
               发送
             </el-button>
-            <span class="hint">空内容时禁用 · tooltip：禁止不能为空</span>
+            <span class="hint">发送后追加写入流转记录</span>
           </div>
         </div>
       </div>
@@ -182,6 +171,7 @@ import StatusTag from '../components/common/StatusTag.vue';
 import ErrorState from '../components/common/ErrorState.vue';
 import LoadingBlock from '../components/common/LoadingBlock.vue';
 import StatusTimeline from '../components/ticket/StatusTimeline.vue';
+import BaseMap from '../components/BaseMap.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -216,8 +206,31 @@ const imgUrl = ref('');
 const imgTitle = ref('');
 
 const cancelled = computed(() => t.value?.status === 'cancelled');
-const ptStyle = computed(() => ({ left: '50%', top: '50%' }));
 const fmt = (v) => (v ? Number(v).toFixed(7) : '—');
+const fmtDate = (v) => {
+  if (!v) return '—';
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false });
+};
+
+/** 地图：问题中心点 + 标注范围（GeoJSON Polygon → 折线闭合框） */
+const mapMarkers = computed(() =>
+  patch.value
+    ? [{ type: 'point', name: t.value?.ticketNo || '问题位置', lat: patch.value.lat, lng: patch.value.lon, extra: patch.value.adminRegion || '' }]
+    : [],
+);
+const mapPolylines = computed(() => {
+  const g = patch.value?.geometry;
+  if (!g) return [];
+  try {
+    const geo = typeof g === 'string' ? JSON.parse(g) : g;
+    const ring = geo?.coordinates?.[0];
+    if (!Array.isArray(ring) || ring.length < 3) return [];
+    return [{ name: '问题范围', color: '#ff6a00', points: ring.map(([lng, lat]) => [lat, lng]) }];
+  } catch {
+    return [];
+  }
+});
 
 function statusText(s) {
   return { sent: '已送达', failed: '发送失败', pending: '待发送', partial: '部分失败' }[s] || s;
@@ -225,7 +238,8 @@ function statusText(s) {
 function costOf(m) {
   if (!m.sentAt || !m.createdAt) return '';
   const d = (new Date(m.sentAt) - new Date(m.createdAt)) / 1000;
-  return d < 1 ? '1.8s' : `${d.toFixed(1)}s`;
+  if (!Number.isFinite(d) || d < 0) return '';
+  return `${d.toFixed(1)}s`;
 }
 
 async function reload() {
@@ -356,44 +370,10 @@ onMounted(reload);
 }
 .map {
   position: relative;
-}
-.map-inner {
-  position: relative;
-  height: 200px;
-  background:
-    linear-gradient(var(--c-line-soft) 1px, transparent 1px) 0 0 / 100% 40px,
-    linear-gradient(90deg, var(--c-line-soft) 1px, transparent 1px) 0 0 / 40px 100%,
-    var(--c-bg-0);
+  height: 260px;
   border: 1px solid var(--c-line);
   border-radius: var(--r-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.pt {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--c-brand);
-  transform: translate(-50%, -50%);
-}
-.coord {
-  position: absolute;
-  bottom: var(--sp-2);
-  font-size: var(--fs-xs);
-  color: var(--c-text-1);
-  font-family: ui-monospace, monospace;
-}
-.map-note {
-  margin: 4px 0 0;
-  font-size: var(--fs-xs);
-  color: var(--c-text-2);
-}
-.area {
-  margin: var(--sp-2) 0 0;
-  font-size: var(--fs-sm);
-  color: var(--c-brand);
+  overflow: hidden;
 }
 .imgs {
   display: flex;
@@ -446,16 +426,6 @@ onMounted(reload);
   font-size: var(--fs-xs);
   color: var(--c-warn);
   background: rgba(255, 176, 32, 0.14);
-}
-.p2 {
-  margin-top: var(--sp-3);
-  padding-top: var(--sp-2);
-  border-top: 1px dashed var(--c-line);
-}
-.p2-h {
-  margin: 0 0 var(--sp-2);
-  font-size: var(--fs-xs);
-  color: var(--c-text-2);
 }
 .hint {
   margin: var(--sp-1) 0 0;
