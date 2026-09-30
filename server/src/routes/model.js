@@ -581,6 +581,10 @@ router.get('/:id/files', async (req, res) => {
     const ts = await resolveTilesets(dir, files);
     const b3dm = files.filter((f) => /\.b3dm$/i.test(f.path));
     const gltf = files.filter((f) => /\.(glb|gltf)$/i.test(f.path));
+    // 点云：LAS 上传到司空 2 后会转成 pnts，此前前端直接丢弃这类瓦片
+    const pntsFiles = files.filter((f) => /\.pnts$/i.test(f.path));
+    // 点云：LAS 上传到司空 2 后会转成 pnts，此前前端直接丢弃这类瓦片
+    const pnts = files.filter((f) => /\.pnts$/i.test(f.path));
     const r2 = resolveRaster2d(dir, files);
     const manifest = {
       files,
@@ -589,6 +593,8 @@ router.get('/:id/files', async (req, res) => {
       tilesetRoots: ts.tilesetRoots,
       b3dm: b3dm.map((f) => f.path),
       gltf: gltf.map((f) => f.path),
+      pnts: pntsFiles.map((f) => f.path),
+      pnts: pnts.map((f) => f.path),
       // 二维模型（正射影像金字塔）：没有 tileset，靠这个字段走瓦片渲染
       raster2d: r2 ? { ...r2, ...(await readMapReport(dir, files) || {}) } : null,
     };
