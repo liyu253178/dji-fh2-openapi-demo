@@ -17,6 +17,7 @@
     "verify:title": "node scripts/verify-patch-title.mjs",
     "verify:review-entry": "node scripts/verify-review-entry.mjs",
     "verify:dispatch-gate": "node scripts/verify-dispatch-gate.mjs",
+    "verify:model-2d": "node scripts/verify-model-2d.mjs",
     "verify:dispatch-flow": "node scripts/verify-dispatch-flow.mjs"
   },
   "dependencies": {
