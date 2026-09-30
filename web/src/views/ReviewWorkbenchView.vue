@@ -278,8 +278,8 @@ async function load() {
      */
     curId.value = (images.value.find((x) => x.hasOriginal) || images.value[0])?.id || 0;
     if (t.ok) types.value = t.data || [];
-    // 架次元信息（用于顶栏展示）
-    const list = await assetApi.tasks({ projectUuid: projectUuid.value, pageSize: 200 });
+    // 架次元信息（用于顶栏展示）——不带 projectUuid，跨项目也能取到本架次
+    const list = await assetApi.tasks({ pageSize: 200 });
     if (list.ok) task.value = (list.data.list || []).find((x) => x.taskUuid === taskUuid.value) || null;
     await loadPatches();
   } catch (e) {

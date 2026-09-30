@@ -24,13 +24,13 @@ function fail(res, r, httpStatus = 400) {
 // 工单
 // ================================================================
 
-/** GET /api/tickets —— 列表（多条件 + 分页） */
+/** GET /api/tickets —— 列表（多条件 + 分页）——运营视角，跨项目看全组织数据 */
 router.get('/', (req, res) => {
-  const { status, issueType, projectUuid, overdue, beginAt, endAt, keyword, page = 1, pageSize = 20 } = req.query || {};
+  // 刻意不接收 projectUuid：工单独立于项目，避免切了项目就「凭空丢数据」
+  const { status, issueType, overdue, beginAt, endAt, keyword, page = 1, pageSize = 20 } = req.query || {};
   const data = ticketRepo.list({
     status: status || undefined,
     issueType: issueType || undefined,
-    projectUuid: projectUuid || undefined,
     overdue: overdue === 'true' || overdue === true ? true : undefined,
     beginAt: beginAt || undefined,
     endAt: endAt || undefined,

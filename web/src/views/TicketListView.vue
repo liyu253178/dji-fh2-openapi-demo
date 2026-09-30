@@ -137,7 +137,6 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ticketApi, reviewApi, dictApi } from '../api/duav';
-import { useSessionStore } from '../stores/session';
 import PageHeader from '../components/common/PageHeader.vue';
 import FilterBar from '../components/common/FilterBar.vue';
 import StatusTag from '../components/common/StatusTag.vue';
@@ -157,7 +156,6 @@ const STATUS = {
 };
 
 const router = useRouter();
-const store = useSessionStore();
 
 const rows = ref([]);
 const total = ref(0);
@@ -201,7 +199,7 @@ async function load(toPage) {
   const r = await ticketApi.list({
     status: q.status || undefined,
     issueType: q.issueType || undefined,
-    projectUuid: store.projectUuid || undefined,
+    // 不带 projectUuid：工单跨项目展示全组织数据，不随顶部项目切换而清空
     overdue: q.overdue || undefined,
     beginAt: b,
     endAt: e,
