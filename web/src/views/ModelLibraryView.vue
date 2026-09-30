@@ -2,13 +2,16 @@
   <div class="card" style="height: 100%; display: flex; flex-direction: column">
     <div class="card-head">
       <span>模型库</span>
-      <span class="sub">当前项目：{{ store.projectName || '未选择' }} · 共 {{ list.length }} 个模型</span>
+      <span class="sub">跨项目 · 共 {{ list.length }} 个模型<template v-if="failedCount"> · {{ failedCount }} 个项目拉取失败</template></span>
       <div style="flex: 1"></div>
-      <el-button size="small" :loading="loading" @click="load">刷新</el-button>
+      <el-button size="small" :loading="loading" @click="load(true)">刷新</el-button>
     </div>
     <div class="card-body" style="flex: 1; padding: 0; overflow: auto">
       <el-table :data="list" size="small" v-loading="loading">
         <el-table-column prop="name" label="模型名称" min-width="180" show-overflow-tooltip />
+        <el-table-column label="所属项目" width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.projectName || '—' }}</template>
+        </el-table-column>
         <el-table-column label="类型" width="110">
           <template #default="{ row }">
             <span class="tag" :class="row.file_type === 'model_3d' ? 'info' : 'ok'">
@@ -53,7 +56,7 @@
         </el-table-column>
         <template #empty>
           <div class="muted small" style="padding: 24px">
-            暂无模型{{ store.projectUuid ? '' : '，请先在顶部选择项目' }}
+            组织内暂无模型——可在司空 2 中建模（或把模型加入任一项目）后点「刷新」
           </div>
         </template>
       </el-table>
@@ -118,13 +121,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
-import { useSessionStore } from '../stores/session';
 import { modelApi, errMsg } from '../api/dji';
 import ModelViewer from '../components/ModelViewer.vue';
 
-const store = useSessionStore();
 const list = ref([]);
 const loading = ref(false);
 const viewerVisible = ref(false);
@@ -132,6 +133,8 @@ const current = ref(null);
 /** 每个模型的源文件预检结果：{ state: 'checking'|'ok'|'bad'|'over', message, size } */
 const checkState = ref({});
 const curCheck = computed(() => (current.value ? checkState.value[current.value.id] : null));
+/** 组织里拉取失败的项目数（单项目失败不影响其它项目展示） */
+const failedCount = ref(0);
 
 const packageSrc = computed(() =>
   current.value?.id ? modelApi.packageSrc(current.value.id, current.value.name) : ''
@@ -156,14 +159,17 @@ function sizeText(n) {
   return `${n} B`;
 }
 
-async function load() {
+async function load(refresh = false) {
   loading.value = true;
-  const r = await modelApi.list();
+  // 模型库跨项目聚合，与顶部选择的项目无关——切项目不重拉
+  const r = await modelApi.list(refresh);
   loading.value = false;
   if (r?.ok) {
     list.value = r.data?.list || [];
+    failedCount.value = (r.data?.errors || []).length;
   } else {
     list.value = [];
+    failedCount.value = 0;
     ElMessage.error(errMsg(r, '模型列表获取失败'));
   }
 }
@@ -199,8 +205,7 @@ function openViewer(row) {
   precheck(row);
 }
 
-onMounted(load);
-watch(() => store.projectUuid, load);
+onMounted(() => load());
 </script>
 
 <style scoped>

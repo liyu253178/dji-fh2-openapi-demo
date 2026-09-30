@@ -129,7 +129,8 @@ export const opsApi = {
 
 /** 模型库（司空 2 开放建模） */
 export const modelApi = {
-  list: () => http.get('/model'),
+  /** 组织全量模型（跨项目聚合）；refresh=1 绕过服务端 60s 缓存 */
+  list: (refresh) => http.get('/model', refresh ? { params: { refresh: 1 } } : undefined),
   detail: (id) => http.get(`/model/${encodeURIComponent(id)}`),
   /** 模型包下载并解压，返回包内文件清单（三维渲染前调用） */
   files: (id) => http.get(`/model/${encodeURIComponent(id)}/files`),
