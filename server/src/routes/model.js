@@ -13,9 +13,11 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { unzipSync } from 'fflate';
+import { Unzip, UnzipInflate } from 'fflate';
 import { request } from '../djiClient.js';
 import { log } from '../logger.js';
 
@@ -23,11 +25,138 @@ const router = Router();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_ROOT = path.resolve(__dirname, '../../data/models');
-/** 单个模型包下载上限（超过就没必要在浏览器里预览了） */
-const MAX_ZIP_BYTES = 300 * 1024 * 1024;
+/**
+ * 单个模型包的下载上限。
+ *
+ * 之前是 300 MB，超了直接拒绝预览——但司空 2 的贴近摄影成果动辄 800MB+
+ * （实测「T3贴近摄影建模」862MB），门槛一设就等于大半模型看不了。
+ * 现在下载/解压已改成流式，内存不再是瓶颈，门槛只用来兜住
+ * 「异常包 / 磁盘不足」，放到 2 GB。
+ */
+const MAX_ZIP_BYTES = 2 * 1024 * 1024 * 1024;
+/** 解压前预留的磁盘余量：zip 本身 + 解压产物至少要装得下 */
+const MIN_FREE_DISK = 4 * 1024 * 1024 * 1024;
 /** 详情短缓存：详情里带签名链接，重复取没有意义 */
 const detailCache = new Map();
 const DETAIL_TTL = 5 * 60 * 1000;
+
+const fmtMB = (n) => `${(n / 1024 / 1024).toFixed(0)} MB`;
+
+/**
+ * 安静删除临时文件：失败不抛，最多重试 3 次（应对 EBUSY / 句柄未释放）。
+ * 删不掉的大不了下次启动清 tmp，只是不该因此把请求搞崩。
+ */
+async function removeQuietly(p, tries = 3) {
+  for (let i = 0; i < tries; i += 1) {
+    try {
+      await fsp.rm(p, { force: true });
+      return true;
+    } catch (e) {
+      if (i === tries - 1) {
+        log.warn('模型库', `临时文件删除失败 ${p}：${e.code || e.message}`);
+        return false;
+      }
+      await new Promise((r) => setTimeout(r, 120 * (i + 1)));
+    }
+  }
+  return false;
+}
+
+/** 取缓存目录所在磁盘的可用字节数（失败返回 Infinity，不阻断流程） */
+function freeDiskBytes(target) {
+  try {
+    const st = fs.statfsSync(path.dirname(target));
+    return Number(st.bavail) * Number(st.bsize);
+  } catch {
+    return Infinity;
+  }
+}
+
+/**
+ * 流式解压 zip 到目录，逐文件写盘。
+ *
+ * 不用 unzipSync：它是同步全量解，包和解压产物会同时驻留内存，
+ * 大包直接 OOM。Unzip 可以边喂数据边出文件，峰值内存只有一个块。
+ * 返回 [{ path, size }]。
+ */
+function unzipToDisk(zipPath, outDir) {
+  return new Promise((resolve, reject) => {
+    const unzip = new Unzip();
+    unzip.register(UnzipInflate);
+    const files = [];
+    const writes = [];
+    let failed = null;
+
+    // fflate 的 Unzip 不是 EventEmitter：文件回调是 onfile 属性，
+    // 压缩方式通过 register() 注册解压器（这里只处理 deflate）。
+    unzip.onfile = (file) => {
+      if (!file.name || file.name.endsWith('/')) return;
+      // 防目录穿越：zip 里可能带 ../ 或绝对路径
+      const rel = path.posix.normalize(file.name.replace(/\\/g, '/'));
+      const safe = rel.replace(/^(\.\.(\/|$))+/, '');
+      if (!safe || safe === '.' || safe.startsWith('/')) return;
+      const target = path.join(outDir, safe);
+      if (!path.resolve(target).startsWith(path.resolve(outDir))) return;
+      const chunks = [];
+      file.ondata = (err, chunk, final) => {
+        if (err || failed) {
+          failed = failed || err || new Error('解压数据出错');
+          return;
+        }
+        chunks.push(chunk);
+        if (final) {
+          const data = Buffer.concat(chunks);
+          chunks.length = 0;
+          files.push({ path: safe, size: data.length });
+          writes.push(
+            fsp
+              .mkdir(path.dirname(target), { recursive: true })
+              .then(() => fsp.writeFile(target, data))
+          );
+        }
+      };
+      // ⚠️ 必须显式 start()：fflate 不会自动开始解压，
+      // 不调用的话这个文件会被静默跳过（onfile 触发了但一个字节都不吐）。
+      file.start();
+    };
+    unzip.onerror = (e) => {
+      failed = failed || new Error(e.message || '解压失败');
+    };
+
+    const rs = fs.createReadStream(zipPath);
+    rs.on('error', reject);
+    rs.on('data', (chunk) => {
+      if (failed) return;
+      try {
+        unzip.push(chunk, false);
+      } catch (e) {
+        failed = e;
+        rs.destroy();
+      }
+    });
+    rs.on('error', reject);
+    rs.on('end', () => {
+      // 句柄必须先关掉，否则调用方删除 zip 时会撞上 EBUSY
+      rs.close(() => {
+        if (!failed) {
+          // 第二个参数 true = 最后一个数据块，触发 onfile 的 final 回调
+          try {
+            unzip.push(new Uint8Array(0), true);
+          } catch (e) {
+            failed = e;
+          }
+        }
+        if (failed) {
+          reject(failed);
+          return;
+        }
+        Promise.all(writes)
+          .then(() => resolve(files))
+          .catch(reject);
+      });
+    });
+  });
+}
 
 const MIME = {
   '.json': 'application/json; charset=utf-8',
@@ -389,31 +518,65 @@ router.get('/:id/files', async (req, res) => {
     if (declared && declared > MAX_ZIP_BYTES) {
       return res.json({
         ok: false,
-        message: `模型包 ${(declared / 1024 / 1024).toFixed(0)} MB，超过浏览器预览上限（300 MB），请下载后用专业软件查看`,
+        message: `模型包 ${fmtMB(declared)}，超过预览上限 ${fmtMB(MAX_ZIP_BYTES)}，请下载后用专业软件查看`,
         data: { files: [] },
       });
     }
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    if (buf.length > MAX_ZIP_BYTES) {
-      return res.json({ ok: false, message: '模型包过大，无法在浏览器预览', data: { files: [] } });
-    }
 
-    let entries = null;
-    try {
-      entries = unzipSync(new Uint8Array(buf));
-    } catch (e) {
-      return res.json({ ok: false, message: `模型包解压失败：${e.message}`, data: { files: [] } });
-    }
-
+    // ⚠️ 必须流式落盘，不能 arrayBuffer() 整体读进内存：
+    // 800MB+ 的包一次读进堆内存，再叠加解压副本，Node 进程会被直接 OOM 掉
+    // （浏览器端同理）。这里边下边写盘、边下边解压，峰值内存只有一个数据块。
     await ensureDir(dir);
-    const files = [];
-    for (const [name, data] of Object.entries(entries)) {
-      if (name.endsWith('/')) continue;
-      const safe = name.replace(/\.\./g, '_');
-      const target = path.join(dir, safe);
-      await ensureDir(path.dirname(target));
-      await fsp.writeFile(target, Buffer.from(data));
-      files.push({ path: safe, size: data.length });
+    if (declared && declared * 2 + MIN_FREE_DISK > freeDiskBytes(dir)) {
+      return res.json({
+        ok: false,
+        message: `磁盘余量不足：解压该模型（${fmtMB(declared)}）至少需要 ${fmtMB(declared * 2)} 可用空间，请清理磁盘后重试`,
+        data: { files: [] },
+      });
+    }
+    // 临时 zip 放系统临时目录，而不是模型缓存目录：
+    // 缓存目录下的文件正被 createReadStream 占用时，Windows/macOS 上
+    // 删除会延后甚至失败（EBUSY），表现为「每次解压都残留一份几十上百 MB 的 zip」。
+    const zipPath = path.join(os.tmpdir(), `duav-model-${id}-${Date.now()}.zip`);
+    let received = 0;
+    try {
+      const counter = new Transform({
+        transform(chunk, _enc, cb) {
+          received += chunk.length;
+          // 有些包 CDN 不给 content-length，靠累计体积中途兜底
+          if (received > MAX_ZIP_BYTES) {
+            cb(new Error(`模型包超过预览上限 ${fmtMB(MAX_ZIP_BYTES)}`));
+            return;
+          }
+          cb(null, chunk);
+        },
+      });
+      await pipeline(Readable.fromWeb(upstream.body), counter, fs.createWriteStream(zipPath));
+    } catch (e) {
+      await fsp.rm(zipPath, { force: true });
+      const over = /超过预览上限/.test(e.message);
+      return res.json({
+        ok: false,
+        message: over ? e.message : `模型包下载中断：${e.message}`,
+        data: { files: [] },
+      });
+    }
+
+    let files = [];
+    try {
+      files = await unzipToDisk(zipPath, dir);
+    } catch (e) {
+      log.error('模型库', `模型包解压失败 id=${id}：${e.message}`, { stack: e.stack });
+      return res.json({ ok: false, message: `模型包解压失败：${e.message}`, data: { files: [] } });
+    } finally {
+      // 原始 zip 用完即删，避免磁盘双份占用。
+      // 两个坑：①rm 抛错会穿到外层 catch，而此时响应已发出 →
+      // ERR_HTTP_HEADERS_SENT 直接把进程带崩；②读流句柄未释放时删除会
+      // EBUSY 失败，所以先 destroy 再删，失败重试几次。
+      await removeQuietly(zipPath);
+    }
+    if (!files.length) {
+      return res.json({ ok: false, message: '模型包为空或已损坏', data: { files: [] } });
     }
     const ts = await resolveTilesets(dir, files);
     const b3dm = files.filter((f) => /\.b3dm$/i.test(f.path));
@@ -438,7 +601,9 @@ router.get('/:id/files', async (req, res) => {
     );
     res.json({ ok: true, data: manifest });
   } catch (e) {
-    log.error('模型库', `模型包准备失败：${e.message}`);
+    log.error('模型库', `模型包准备失败：${e.message}`, { stack: e.stack });
+    // 响应可能已经发出（例如解压失败后 finally 又出错），再发一次会直接把进程带崩
+    if (res.headersSent) return;
     res.json({ ok: false, message: `模型包准备失败：${e.message}`, data: { files: [] } });
   }
 });
