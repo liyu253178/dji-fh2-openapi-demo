@@ -32,6 +32,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { modelApi } from '../api/dji';
 
 const props = defineProps({
@@ -110,6 +111,8 @@ function releaseScene(scene) {
       m.dispose?.();
     }
   });
+  // 点云瓦片共享一个自建材质（挂在 userData 上，遍历拿不到），单独释放
+  scene?.userData?.material?.dispose?.();
 }
 /** 当前这一帧需要显示的瓦片 */
 const desired = new Set();
@@ -118,6 +121,8 @@ let active = 0;
 let frameCount = 0;
 let updateTimer = 0;
 let sharedDraco = null;
+/** KTX2/Basis 转码器（懒加载，需要 renderer 才能 detectSupport） */
+let sharedKTX2 = null;
 /** 包内 tileset.json 的内容（外部瓦片集需要就地展开） */
 const tilesetCache = new Map();
 /** 本轮展开时还没拿到的外部瓦片集，下一轮补拉 */
@@ -151,7 +156,101 @@ function createLoader() {
     sharedDraco.setDecoderPath('/draco/');
   }
   loader.setDRACOLoader(sharedDraco);
+  if (sharedKTX2) loader.setKTX2Loader(sharedKTX2);
   return loader;
+}
+
+/** KTX2/Basis 纹理支持（three 自带转码器，同样本地化托管） */
+function ensureKTX2(renderer) {
+  if (sharedKTX2) return sharedKTX2;
+  try {
+    const k = new KTX2Loader()
+      .setTranscoderPath('/basis/')
+      .detectSupport(renderer);
+    sharedKTX2 = k;
+    return k;
+  } catch (e) {
+    // 老 WebGL / 不支持时降级：没有 KTX2 纹理的模型不受影响
+    console.warn('[ModelViewer] KTX2 转码器不可用：', e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * pnts 点云瓦片 → three 的 Points 对象
+ *
+ * 此前完全不支持 pnts：模型包里一旦有点云（LAS 上传后司空 2 会转成 pnts），
+ * 该瓦片会被 loadTile 当成未知格式而静默丢弃，用户看到「模型缺一块」。
+ *
+ * pnts 结构与 b3dm 同源（28 字节头 + featureTable + batchTable + glb），
+ * 差别在 glTF 里是 POINTS 原始模式而非 mesh，这里用 PointsMaterial 渲染。
+ */
+function extractGlbFromPnts(buf) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(u8.buffer, u8.byteOffset, 28);
+  if (String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== 'pnts') throw new Error('不是 pnts 瓦片');
+  const ftJson = dv.getUint32(12, true);
+  const ftBin = dv.getUint32(16, true);
+  const btJson = dv.getUint32(20, true);
+  const btBin = dv.getUint32(24, true);
+  const start = 28 + ftJson + ftBin + btJson + btBin;
+  if (start >= u8.byteLength) throw new Error('pnts 内没有 glTF 数据');
+  return u8.slice(start).buffer;
+}
+
+/** 点云：glTF 场景里通常是 Mesh，这里转成可渲染的 Points */
+function pntsToPoints(gltf) {
+  const out = new THREE.Group();
+  const mat = new THREE.PointsMaterial({ size: 0.6, sizeAttenuation: true, vertexColors: true });
+  out.userData.material = mat;
+  gltf.scene.updateMatrixWorld(true);
+  gltf.scene.traverse((o) => {
+    // GLTFLoader 对 mode=0(POINTS) 的 primitive 会直接生成 THREE.Points，
+    // 只有当它没识别成 Points 时才还是 Mesh —— 两种都要接住，
+    // 否则点云瓦片会「加载成功但一个点都没画」（之前只判 isMesh 就是这个坑）。
+    const isMesh = o.isMesh || o.isPoints;
+    if (!isMesh || !o.geometry) return;
+    const pos = o.geometry.getAttribute('position');
+    if (!pos) return;
+    // 带颜色的点云优先取顶点色；没有就按高度做伪彩（蓝→绿→黄）
+    let colors = o.geometry.getAttribute('color');
+    // pnts 规范里 RGB 是 unsigned byte，必须归一化到 0~1，
+    // 否则顶点色全落在 0~1/255 区间 → 画面几乎全黑
+    if (colors && colors.array instanceof Uint8Array) {
+      const f = new Float32Array(colors.count * 3);
+      for (let i = 0; i < colors.count; i += 1) {
+        f[i * 3] = colors.getX(i) / 255;
+        f[i * 3 + 1] = colors.getY(i) / 255;
+        f[i * 3 + 2] = colors.getZ(i) / 255;
+      }
+      colors = new THREE.BufferAttribute(f, 3);
+    }
+    if (!colors) {
+      colors = new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3);
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < pos.count; i += 1) {
+        const y = pos.getY(i);
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      const span = maxY - minY || 1;
+      for (let i = 0; i < pos.count; i += 1) {
+        const t = (pos.getY(i) - minY) / span;
+        colors.setXYZ(i, 0.15 + t * 0.85, 0.35 + t * 0.6, 0.85 - t * 0.7);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', pos);
+    geo.setAttribute('color', colors);
+    // 只拷属性、不烘世界变换：瓦片的世界变换由 pump() 统一乘 node.matrix，
+    // 和 b3dm 走同一条路径。这里若先把 matrixWorld 烘进坐标，
+    // 后面再乘一次 node.matrix 就会二次位移（表现为画面全黑）。
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false; // 点云包围球常被整体平移算偏，关掉视锥剔除更稳
+    out.add(pts);
+  });
+  return out;
 }
 
 async function loadTile(uri) {
@@ -162,15 +261,29 @@ async function loadTile(uri) {
   const bytes = Number(res.headers.get('content-length') || 0);
   const buf = await res.arrayBuffer();
   const loader = createLoader();
-  const parsed = /\.b3dm$/i.test(uri)
-    ? new Promise((resolve, reject) => loader.parse(extractGlbFromB3dm(buf), '', resolve, reject))
-    : /\.glb$/i.test(uri)
-      ? new Promise((resolve, reject) => loader.parse(buf, '', resolve, reject))
-      : new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
-  const gltf = await parsed;
-  // gltf 场景挂一个 bytes 字段，供显存预算与 HUD 展示使用
-  if (gltf?.scene) gltf.scene.userData.bytes = bytes;
-  return gltf;
+
+  let obj = null;
+  if (/\.pnts$/i.test(uri)) {
+    const gltf = await new Promise((resolve, reject) =>
+      loader.parse(extractGlbFromPnts(buf), '', resolve, reject)
+    );
+    obj = pntsToPoints(gltf);
+  } else if (/\.b3dm$/i.test(uri)) {
+    const gltf = await new Promise((resolve, reject) =>
+      loader.parse(extractGlbFromB3dm(buf), '', resolve, reject)
+    );
+    obj = gltf.scene;
+  } else if (/\.glb$/i.test(uri)) {
+    const gltf = await new Promise((resolve, reject) => loader.parse(buf, '', resolve, reject));
+    obj = gltf.scene;
+  } else {
+    const gltf = await new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
+    obj = gltf.scene;
+  }
+  if (!obj) throw new Error('瓦片解析后没有可渲染内容');
+  // 挂一个 bytes 字段，供显存预算与 HUD 展示使用
+  obj.userData.bytes = bytes;
+  return { scene: obj };
 }
 
 function dirOf(p) {
@@ -277,6 +390,8 @@ function initThree() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(canvasWrap.value.clientWidth || 600, canvasWrap.value.clientHeight || 380);
   canvasWrap.value.appendChild(renderer.domElement);
+  // KTX2 转码器要靠 renderer 探测 GPU 支持，必须在 renderer 建好之后初始化
+  ensureKTX2(renderer);
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0e1116);
@@ -420,10 +535,23 @@ function refreshStage() {
   stage.value = busy
     ? `正在加载更精细的瓦片…（已显示 ${shown} / ${desired.size} · 显存 ${mem}）`
     : '';
+  // 全部瓦片都失败时必须说清楚，不能让用户对着黑窗口猜
+  if (!busy && desired.size > 0 && shown === 0) {
+    const failed = [...desired].filter((id) => nodeState.get(id)?.failed).length;
+    error.value = failed
+      ? `${failed} 个瓦片全部加载失败（可能是不支持的格式或源文件损坏），已退回预览图`
+      : '';
+  }
   if (!busy) updateBounds();
 }
 
-/** 稳定的时候量一次包围盒：中心应接近原点（ECEF 大坐标已平移掉） */
+/**
+ * 稳定的时候量一次包围盒：中心应接近原点（ECEF 大坐标已平移掉）
+ *
+ * 注意：点云（THREE.Points）没有可用的 computeBoundingBox 时 setFromObject
+ * 会得到空盒，这里额外用几何属性直接算一遍，否则点云相机会停在原点、
+ * 画面全黑（表现为「瓦片加载了但什么也看不见」）。
+ */
 function updateBounds() {
   if (!group || !camera) return;
   let box = null;
@@ -431,6 +559,19 @@ function updateBounds() {
     box = new THREE.Box3().setFromObject(group);
   } catch {
     return;
+  }
+  if (box.isEmpty() || !Number.isFinite(box.min.x)) {
+    // 兜底：遍历点云/网格的 position 属性求并集
+    const bb = new THREE.Box3();
+    group.traverse((o) => {
+      const pos = o.geometry?.getAttribute?.('position');
+      if (!pos) return;
+      for (let i = 0; i < pos.count; i += 1) {
+        const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(o.matrixWorld);
+        bb.expandByPoint(v);
+      }
+    });
+    box = bb;
   }
   if (box.isEmpty()) return;
   const size = box.getSize(new THREE.Vector3());
@@ -447,13 +588,19 @@ function pump() {
     st.loading = true;
     active += 1;
     loadTile(node.uri)
-      .then((gltf) => {
+      .then((res) => {
         st.loading = false;
         active -= 1;
-        const obj = gltf?.scene;
+        const obj = res?.scene;
         if (!obj) return;
         // 瓦片内容按自身 transform 落到世界坐标（ECEF）；Z-up→Y-up 由外层 world 统一处理
         obj.applyMatrix4(node.matrix);
+        // 关键：applyMatrix4 改的是 matrix，需要显式分解/刷新，
+        // 否则子物体的 matrixWorld 仍是旧的，父级平移（group.position=-origin）
+        // 不会作用到它身上 —— 表现是「瓦片加载成功、包围盒算出来是 ECEF 大坐标、
+        // 相机在原点附近，画面全黑」。点云尤其明显（frustumCulled 关了也照样黑）。
+        obj.updateMatrix();
+        obj.updateMatrixWorld(true);
         st.scene = obj;
         st.bytes = obj.userData.bytes || 0;
         gpuBytes += st.bytes;
@@ -604,9 +751,9 @@ async function build() {
 
   if (!root) {
     // 包内没有可用的 tileset.json：退化成「平铺加载所有 b3dm / glb」
-    const flat = [...(data.gltf || []), ...(data.b3dm || [])].slice(0, 60);
+    const flat = [...(data.gltf || []), ...(data.b3dm || []), ...(data.pnts || [])].slice(0, 60);
     if (!flat.length) {
-      error.value = '模型包内没有可渲染的三维文件（b3dm / glb / gltf）';
+      error.value = '模型包内没有可渲染的三维文件（b3dm / pnts 点云 / glb / gltf）';
       mode.value = 'image';
       stage.value = '';
       return;
@@ -619,9 +766,9 @@ async function build() {
     let loaded = 0;
     for (const p of flat) {
       try {
-        const gltf = await loadTile(p);
-        if (!gltf?.scene) continue;
-        group.add(gltf.scene);
+        const r = await loadTile(p);
+        if (!r?.scene) continue;
+        group.add(r.scene);
         loaded += 1;
       } catch {
         /* 忽略单个失败 */
@@ -642,12 +789,17 @@ async function build() {
   tree = root;
   registerNodes(tree);
 
+  // 坐标系处理：司空 2 导出的 tileset 是 Z-up（ECEF 大坐标），
+  // 但也可能是 Y-up 的局部坐标（自制 tileset / 点云）。
+  // 这里以 asset.gltfUpAxis 为准，不能一律当 ECEF 处理——
+  // 否则 Y-up 的模型会被平移错位置，表现为「瓦片都加载了但画面全黑」。
+  const isEcef = upAxis === 'Z';
   // 模型中心对齐到原点：整体平移，避免 ECEF 大坐标带来的浮点抖动
   origin.copy(tree.centerWorld || new THREE.Vector3());
   // Z-up（ECEF）→ Y-up（three.js）：绕 X 轴 -90°，必须作用在整个模型上，
   // 不能作用到单个瓦片后再乘 ECEF 变换，否则姿态会歪
   upFix.identity();
-  if (upAxis === 'Z') upFix.makeRotationX(-Math.PI / 2);
+  if (isEcef) upFix.makeRotationX(-Math.PI / 2);
 
   initThree();
   world.rotation.setFromRotationMatrix(upFix);
@@ -655,8 +807,10 @@ async function build() {
   group.position.copy(origin).negate();
   applyFrame(tree);
 
-  const radius = tree.radius || 100;
-  camera.position.set(radius * 1.1, radius * 0.75, radius * 1.1);
+  // 相机取景：用实际包围球半径，Y-up 时半径可能极小（局部坐标），
+  // 给一个下限避免相机贴脸导致什么都看不见
+  const radius = Math.max(tree.radius || 0, 1);
+  camera.position.set(radius * 1.6, radius * 1.1, radius * 1.6);
   camera.near = Math.max(radius / 1000, 0.01);
   camera.far = radius * 100 + 1000;
   camera.updateProjectionMatrix();
@@ -727,6 +881,9 @@ onBeforeUnmount(() => {
   dispose();
   sharedDraco?.dispose();
   sharedDraco = null;
+  // KTX2 转码器持有 wasm 内存，不释放会在多次开关模型后累积
+  sharedKTX2?.dispose?.();
+  sharedKTX2 = null;
 });
 watch(
   () => props.modelId,
