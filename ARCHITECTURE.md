@@ -1,5 +1,10 @@
 # DUAV · 无人机巡检监管平台 · 架构设计
 
+> 📌 **本文是接口层与数据流的设计说明，配套的可运行系统是 Demo**：
+> 工单闭环仍有 Bug 需真实场景验证、邮件派发只是推送通道的一种 Demo 实现、
+> 司空 2 OpenAPI 存在能力边界（无法手动飞行、无法在线画航线、AI 需自建服务）。
+> **使用前请先读 [README.md](./README.md) 的「Demo 的边界」章节。**
+
 > 文档版本：v1.1 ｜ 对接标准：全新司空 2 OpenAPI V1.0（https://fh2-api.apifox.cn/llms.txt）
 > 接入点：公有云国内 `https://es-flight-api-cn.djigate.com`，所有业务路径前缀 `/openapi/v0.1`
 > 品牌：DUAV（底层对接大疆司空 2 / DJI FlightHub 2）
