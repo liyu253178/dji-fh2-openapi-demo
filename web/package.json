@@ -16,7 +16,8 @@
     "verify:pano": "node scripts/verify-pano-viewer.mjs",
     "verify:title": "node scripts/verify-patch-title.mjs",
     "verify:review-entry": "node scripts/verify-review-entry.mjs",
-    "verify:dispatch-gate": "node scripts/verify-dispatch-gate.mjs"
+    "verify:dispatch-gate": "node scripts/verify-dispatch-gate.mjs",
+    "verify:dispatch-flow": "node scripts/verify-dispatch-flow.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

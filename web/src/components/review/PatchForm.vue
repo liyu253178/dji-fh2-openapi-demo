@@ -131,7 +131,7 @@
     <template #footer>
       <el-button @click="$emit('update:visible', false)">取消</el-button>
       <el-button @click="submit(false)">保存图斑</el-button>
-      <el-button type="primary" :loading="saving" @click="submit(true)">保存并生成工单</el-button>
+      <el-button type="primary" :loading="saving" @click="submit(true)">保存并生成工单草稿</el-button>
     </template>
   </el-dialog>
 </template>

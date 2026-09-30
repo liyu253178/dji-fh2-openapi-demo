@@ -369,8 +369,8 @@ async function onSaved({ withTicket }) {
     const p = r.ok ? r.data.list?.[0] : null;
     if (p) {
       const t = await ticketApi.create({ patchId: p.patchId });
-      if (t.ok) ElMessage.success(`工单 ${t.data.ticketNo} 已创建，可在工单管理中派发`);
-      else ElMessage.warning(`图斑已保存，但工单创建失败：${t.message}`);
+      if (t.ok) ElMessage.success(`已生成工单草稿 ${t.data.ticketNo}，请到「工单列表」选择派发对象后派发`);
+      else ElMessage.warning(`图斑已保存，但工单草稿创建失败：${t.message}`);
     }
   }
 }
