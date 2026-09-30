@@ -107,6 +107,14 @@ const patchId = computed(() => props.ticket?.patchId || props.patches[0]?.patchI
 const currentRecipient = computed(() => recipients.value.find((r) => r.id === recipientId.value) || null);
 const canSend = computed(() => !!recipientId.value && !!patchId.value);
 
+/** 选中派发对象后自动带出该单位的责任人与电话；留空字段才填，不覆盖手动输入 */
+watch(recipientId, (id) => {
+  const r = recipients.value.find((x) => x.id === id);
+  if (!r) return;
+  if (!assignedTo.value && r.contact) assignedTo.value = r.contact;
+  if (!contact.value && r.phone) contact.value = r.phone;
+});
+
 const subjectPreview = computed(() => {
   if (props.ticket) {
     return `【低空巡查问题线索】${props.ticket.issueTypeName || ''}（限期 ${String(props.ticket.deadline || '').slice(0, 10) || '7 天'}）`;
