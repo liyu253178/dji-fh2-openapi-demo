@@ -1192,6 +1192,19 @@ watch(
   { immediate: true, deep: true }
 );
 
+/**
+ * 换机场后的默认画面源。
+ *
+ * 与 onMounted 的取同一套逻辑：飞行器待机时它自己的图传会间歇停推，
+ * 机场相机始终可用，所以先把左列「现场画面」顶上来，保证换机场后立刻有画面。
+ * 机位覆盖值清空——不继承上一台机场的实测结果，重新按范式从首选开始。
+ */
+function pickDefaultSource() {
+  positionOverride.value = '';
+  if (!dockCameraIndex.value || !airportCameraIndex.value) return;
+  if (!dockStreamOn.value) startSideStream(true);
+}
+
 watch(dockSn, (sn) => {
   const d = store.airports.find((a) => a.sn === sn);
   if (d?.droneSn) droneSn.value = d.droneSn;
