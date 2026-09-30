@@ -159,7 +159,7 @@ async function load(toPage) {
   try {
     const bound = dayBounds(q.range, 'iso');
     const query = {
-      projectUuid: store.projectUuid || undefined,
+      // 不带 projectUuid：巡检成果跨项目展示全组织数据，不随顶部项目切换而清空
       dockSn: q.dockSn || undefined,
       beginAt: bound?.beginAt,
       endAt: bound?.endAt,

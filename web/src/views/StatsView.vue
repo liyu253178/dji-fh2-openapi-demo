@@ -71,14 +71,12 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import * as echarts from 'echarts';
 import { ticketApi, dictApi } from '../api/duav';
-import { useSessionStore } from '../stores/session';
 import PageHeader from '../components/common/PageHeader.vue';
 import FilterBar from '../components/common/FilterBar.vue';
 import StatusTag from '../components/common/StatusTag.vue';
 import { useThemeTokens } from '../composables/useThemeTokens';
 
 const router = useRouter();
-const store = useSessionStore();
 const tokens = useThemeTokens();
 
 const rows = ref([]);
@@ -115,7 +113,8 @@ async function load() {
     ticketApi.statsSummary({ beginAt: b, endAt: e, issueType: issueType.value || undefined }),
     ticketApi.statsByRegion(),
     ticketApi.statsByType(),
-    ticketApi.list({ beginAt: b, endAt: e, projectUuid: store.projectUuid || undefined, page: page.value, pageSize: 20 }),
+    // 不带 projectUuid：台账跨项目统计全组织数据
+    ticketApi.list({ beginAt: b, endAt: e, page: page.value, pageSize: 20 }),
   ]);
   if (s.ok) summary.value = s.data || {};
   if (r.ok) byRegion.value = r.data || [];

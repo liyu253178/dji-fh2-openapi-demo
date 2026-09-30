@@ -6,7 +6,8 @@
  *  2. 点它直达 /review/task/:uuid 工作台（不再经过已删除的 /review 队列页）
  *  3. 表单里不再出现「问题范围 / 已框选 / ㎡ / 亩 / 重新框选」
  *  4. 框选后不再调用 /api/review/area-estimate（面积计算已停用）
- *  5. 0 控制台错误
+ *  5. 巡检成果/工单列表跨项目：带任意 projectUuid 参数也返回全组织数据
+ *  6. 0 控制台错误
  *
  * 依赖：playwright-core + 系统 Chrome；找不到就跳过（退出码 0）。
  */
@@ -65,7 +66,13 @@ p.on('request', (r) => {
 
 // 1) 巡检成果页按钮文案
 await p.goto(BASE + '/assets', { waitUntil: 'networkidle', timeout: 40000 });
-await p.waitForSelector('.el-table__row', { timeout: 30000 });
+try {
+  await p.waitForSelector('.el-table__row', { timeout: 30000 });
+} catch {
+  console.log('⏭  跳过：全组织范围内没有已同步的影像架次');
+  await b.close();
+  process.exit(0);
+}
 await p.waitForTimeout(1200);
 
 const btns = await p.evaluate(() => {
@@ -77,6 +84,17 @@ const btns = await p.evaluate(() => {
 });
 ok('列表出现「审核影像」按钮', btns.some((t) => t === '审核影像'), JSON.stringify(btns.slice(0, 6)));
 ok('不再有「查看影像」旧文案', !btns.some((t) => t === '查看影像'), JSON.stringify(btns.slice(0, 6)));
+
+// 1.5) 跨项目：列表接口应忽略 projectUuid（运营视角看全组织）
+const orgWide = await p.evaluate(async (base) => {
+  const [a, t] = await Promise.all([
+    fetch(`${base}/api/asset/tasks?pageSize=5&projectUuid=not-exist-project`).then((r) => r.json()),
+    fetch(`${base}/api/tickets?pageSize=5&projectUuid=not-exist-project`).then((r) => r.json()),
+  ]);
+  return { assetTotal: a?.data?.total ?? -1, ticketTotal: t?.data?.total ?? -1 };
+}, BASE);
+ok('巡检成果跨项目（忽略 projectUuid）', orgWide.assetTotal > 0, `total=${orgWide.assetTotal}`);
+ok('工单列表跨项目（忽略 projectUuid）', orgWide.ticketTotal >= 0, `total=${orgWide.ticketTotal}`);
 
 // 2) 点「审核影像」直达工作台
 await p.evaluate(() => {

@@ -218,11 +218,11 @@ router.post('/prune-empty-tasks', (req, res) => {
 // 架次与影像
 // ===================================================================
 
-/** 架次列表（含影像统计与审核进度） */
+/** 架次列表（含影像统计与审核进度）——运营视角，跨项目看全组织数据 */
 router.get('/tasks', (req, res) => {
-  const { projectUuid, dockSn, beginAt, endAt, page = 1, pageSize = 20 } = req.query || {};
+  // 刻意不接收 projectUuid：巡检成果独立于项目，避免切了项目就「凭空丢数据」
+  const { dockSn, beginAt, endAt, page = 1, pageSize = 20 } = req.query || {};
   const data = syncRepo.listTasks({
-    projectUuid,
     dockSn,
     // 必须归一化成 begin_at 的文本格式再进 SQL，否则时间戳入参会静默查出 0 条（见 toIsoText 注释）
     beginAt: toIsoText(beginAt),
