@@ -2,7 +2,7 @@
   <div class="dash">
     <!-- 全屏地图铺底 -->
     <div class="dash-map">
-      <BaseMap ref="mapRef" :markers="markers" :zoom="10" @marker-click="onMarkerClick" />
+      <BaseMap ref="mapRef" :markers="markers" :circles="nestCircles" :zoom="10" @marker-click="onMarkerClick" />
     </div>
 
     <!-- 左上：最近作业记录（可折叠 / 可切换机场 / 本月航线执行柱状图） -->
@@ -76,19 +76,19 @@
     <div class="kpi-bar kpi-dash">
       <div class="kpi-cell">
         <div class="k">今日飞行架次</div>
-        <div class="v">{{ kpi.sorties }}</div>
+        <div class="v"><span v-count="kpi.sorties">0</span></div>
       </div>
       <div class="kpi-cell">
         <div class="k">累计飞行时长</div>
-        <div class="v">{{ kpi.durationHours }}<span class="u">h</span></div>
+        <div class="v"><span v-count="kpi.durationHours" :decimals="1">0</span><span class="u">h</span></div>
       </div>
       <div class="kpi-cell">
         <div class="k">巡查里程</div>
-        <div class="v">{{ kpi.distanceKm }}<span class="u">km</span></div>
+        <div class="v"><span v-count="kpi.distanceKm" :decimals="1">0</span><span class="u">km</span></div>
       </div>
-      <div class="kpi-cell danger">
+      <div class="kpi-cell" :class="{ danger: kpi.alerts > 0, 'alert-pulse': kpi.alerts > 0 }">
         <div class="k">待处理告警</div>
-        <div class="v">{{ kpi.alerts }}</div>
+        <div class="v"><span v-count="kpi.alerts">0</span></div>
       </div>
     </div>
   </div>
@@ -346,8 +346,10 @@ const kpi = computed(() => {
   const trend = o.trend || [];
   return {
     sorties: trend.length ? trend[trend.length - 1].count : flight.sorties || 0,
-    durationHours: ((flight.durationMin || 0) / 60).toFixed(1),
-    distanceKm: (flight.distanceKm || 0).toFixed(1),
+    // 返回数字而不是 toFixed 后的字符串：数字要交给 v-count 滚动，
+    // 小数位由模板上的 :decimals 声明，指令内部会处理显示格式
+    durationHours: Math.round(((flight.durationMin || 0) / 60) * 10) / 10,
+    distanceKm: Math.round((flight.distanceKm || 0) * 10) / 10,
     alerts: res.alerts || 0,
   };
 });
@@ -382,8 +384,33 @@ const markers = computed(() =>
     .filter(Boolean)
 );
 
-async function loadData() {
-  // 标记轮询状态，顶栏据此显示「刷新中 / Ns 前已刷新」
+/**
+ * 机巢作业半径圈
+ *
+ * 说明：这里**不画编造的飞线**。司空 2 的任务列表不返回航点坐标
+ * （task/list 只有 total_waypoints，没有 points 数组），航线列表也不带航点，
+ * 所以「机场 → 作业点」的飞线两端拿不到真实数据，画出来只会误导。
+ *
+ * 改为画**有真实数据支撑的覆盖范围圈**：用该机场真实累计飞行里程推算作业半径
+ * （行业经验值 ~ 直线距离约为航程的 40%），悬停能看到具体公里数。
+ * 数据来自 overview.flight.distanceKm，里程为 0 时不画（不给假圈）。
+ */
+const nestCircles = computed(() => {
+  const flight = overview.value?.flight || {};
+  // 累计里程为 0 说明这台机场还没飞过，画圈就是编数据了
+  if (!flight.distanceKm) return [];
+  const radiusM = Math.round((flight.distanceKm * 1000 * 0.4) / 500) * 500;
+  if (!radiusM) return [];
+  return (store.airports || [])
+    .map((a) => {
+      const p = posOf(a.sn);
+      if (!p) return null;
+      return { lat: p.lat, lng: p.lng, radius: radiusM, color: '#4a8cff', name: a.callsign || a.sn };
+    })
+    .filter(Boolean);
+});
+
+async function loadData() {  // 标记轮询状态，顶栏据此显示「刷新中 / Ns 前已刷新」
   store.polling = true;
   try {
     const [w, o] = await Promise.all([waylineApi.list(), opsApi.overview()]);
@@ -508,4 +535,74 @@ onUnmounted(() => {
 
 .kpi-dash { position: absolute; left: 12px; right: 12px; bottom: 12px; }
 .empty { padding: 8px 2px; text-align: center; }
+
+/* ---------- 大屏质感增强 ---------- */
+
+/* 面板科技感：左上角强调角标 + 顶部一道渐隐高光线。
+   纯装饰，不改布局、不挡内容（pointer-events: none）。 */
+.dash :deep(.panel)::before {
+  content: '';
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 2px;
+  background: linear-gradient(90deg, var(--c-brand), transparent);
+  pointer-events: none;
+}
+.dash :deep(.panel)::after {
+  content: '';
+  position: absolute; left: 0; top: 0;
+  width: 2px; height: 14px;
+  background: linear-gradient(180deg, var(--c-brand), transparent);
+  pointer-events: none;
+}
+/* 面板头加一条渐隐分隔，比纯 border 更有层次 */
+.dash :deep(.panel-head) {
+  position: relative;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+}
+.dash :deep(.panel-head)::after {
+  content: '';
+  position: absolute; left: 12px; right: 12px; bottom: 0; height: 1px;
+  background: linear-gradient(90deg, var(--c-brand), transparent 65%);
+  opacity: 0.5;
+}
+
+/* 待处理告警 > 0：整格脉冲红光，视线自然被拉到风险上。
+   只改 box-shadow/透明度，不动布局，避免大屏抖动。 */
+.kpi-cell.alert-pulse {
+  animation: kpi-alert 1.8s ease-in-out infinite;
+}
+@keyframes kpi-alert {
+  0%, 100% { background: rgba(226, 75, 74, 0.06); }
+  50%      { background: rgba(226, 75, 74, 0.16); }
+}
+
+/* KPI 数字：等宽数字，滚动时不左右跳动 */
+.kpi-cell .v { font-variant-numeric: tabular-nums; }
+
+/* ---------- 大屏自适应 ----------
+   不用 autofit.js 那种整体缩放（会让 1920 屏上的字在 2560 屏上偏小、
+   鼠标热区错位），改用 clamp() 按视口平滑缩放关键尺寸。
+   基准 1920×1080；超过 2560 宽时封顶，避免元素过度膨胀。 */
+.dash {
+  --dash-gap: clamp(8px, 0.78vw, 16px);
+  --dash-pad: clamp(10px, 0.73vw, 18px);
+  --panel-w-task: clamp(280px, 17.2vw, 360px);
+  --panel-w-nest: clamp(220px, 14vw, 300px);
+  --kpi-font: clamp(20px, 1.35vw, 30px);
+}
+.dash .panel-tasks { left: var(--dash-gap); top: var(--dash-gap); width: var(--panel-w-task); }
+.dash .panel-nest { right: var(--dash-gap); top: var(--dash-gap); width: var(--panel-w-nest); }
+.dash .kpi-bar { left: var(--dash-gap); right: var(--dash-gap); bottom: var(--dash-gap); }
+.dash :deep(.map-toolbar) { bottom: calc(var(--dash-gap) + 76px); }
+.dash .kpi-cell .v { font-size: var(--kpi-font); }
+
+/* 窄屏（笔记本 1366 及以下）收紧面板，给地图留出可视面积 */
+@media (max-width: 1440px) {
+  .dash { --panel-w-task: 268px; --panel-w-nest: 208px; }
+}
+
+/* 尊重系统的「减少动态效果」：关掉脉冲与呼吸，数字直接跳到终值 */
+@media (prefers-reduced-motion: reduce) {
+  .kpi-cell.alert-pulse { animation: none; }
+}
 </style>
