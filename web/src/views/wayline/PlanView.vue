@@ -729,7 +729,17 @@ onBeforeUnmount(() => {
 .plan { display: flex; gap: 12px; height: calc(100vh - 132px); }
 .plan-map { position: relative; flex: 1; min-width: 380px; border: 1px solid var(--c-line); border-radius: 10px; overflow: hidden; }
 .plan-side { width: 366px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.type-card { padding: 10px 12px; }
+.type-card {
+  padding: 10px 12px;
+  /* 关键修复：.plan-side 是固定高的 column flex 容器，带状/预览后内容变长溢出时，
+     flex 子项默认会被等比压缩 —— 类型卡内容可压缩（overflow:hidden），
+     被压到 22px 后按钮下半截被裁，看起来就是「类型按钮行显示错乱」。
+     flex-shrink:0 让它保持固有高度；sticky 让它滚动时始终吸顶常驻可见 */
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
 .plan-side :deep(.el-collapse-item__header) { font-size: 13px; }
 .plan-side :deep(.el-collapse-item__content) { padding-bottom: 14px; }
 
