@@ -93,6 +93,55 @@ if (grid.ok && ortho.ok) {
   check('井字模板开启 doubleGrid', g.ok && /<wpml:doubleGridWaylineEnable>1</.test(g.files['wpmz/template.kml']));
 }
 
+console.log('\n[4b] 井字双遍几何：独立间距 / 正交 / 最近端接入');
+if (grid.ok) {
+  const passes = grid.geometry?.passes || [];
+  check('输出两遍各自的解算结果', passes.length === 2 && passes[0].direction === 0 && passes[1].direction === 90, passes.map((p) => `${p.name}间距${p.spacing}`).join(' / '));
+  check(
+    '正射下解算值与教科书公式一致',
+    Math.abs(passes[0].spacing - passes[0].textbookSpacing) < 0.6 && Math.abs(passes[0].base - passes[0].textbookBase) < 0.6,
+    `间距 ${passes[0].spacing} vs ${passes[0].textbookSpacing} / 片基 ${passes[0].base} vs ${passes[0].textbookBase}`
+  );
+  const grp = grid.plan.groups || [];
+  check('两遍航带数互补且已按最近端串接', grp.length === 2 && Array.isArray(grid.plan.flightPath) && Array.isArray(grid.plan.stats.links), `组间转移 ${grid.plan.stats.transitionsM} m`);
+  check('GSD 随任务一并回算', grid.geometry.gsdCm > 0 && grid.geometry.height === 60, `${grid.geometry.gsdCm} cm/px @ ${grid.geometry.height} m`);
+  // 云台随机头俯仰时，两遍相对各自航向的几何完全一致，间距必须相等——
+  // 「两遍不同」只发生在固定方位视角下（见 4c），这里不能想当然。
+  check('随机头云台时两遍几何一致', passes[0].spacing === passes[1].spacing && passes[0].base === passes[1].base, `${passes[0].spacing}/${passes[1].spacing} m`);
+}
+
+console.log('\n[4c] 倾斜摄影：固定方位视角下两遍间距必须不同');
+const oblique = await plan({
+  polygon,
+  aircraftKey: target.key,
+  params: { ...base, templateType: 'doubleGrid', gimbalPitch: -45, tiltFrame: 'world', tiltAzimuthDeg: 0 },
+});
+check('倾斜规划成功', oblique.ok, oblique.message || '');
+if (oblique.ok) {
+  const p = oblique.geometry.passes;
+  const gap = Math.abs(p[0].spacing - p[1].spacing) / Math.max(p[0].spacing, p[1].spacing);
+  console.log(`     主航向 间距 ${p[0].spacing}m / 片基 ${p[0].base}m；正交航向 间距 ${p[1].spacing}m / 片基 ${p[1].base}m`);
+  check('倾角已带入几何解算', oblique.geometry.tiltDeg === 45 && oblique.geometry.gimbalPitch === -45);
+  check('两遍间距不同（沿用同一个会有一个方向不达标）', gap > 0.05, `相差 ${(gap * 100).toFixed(1)}%`);
+  check('给出两遍间距差异的说明性告警', (oblique.warnings || []).some((w) => w.includes('有效覆盖不同')), (oblique.warnings || []).join(' | ') || '无');
+}
+
+console.log('\n[4d] 按地面分辨率反算航高');
+const byGsd = await plan({ polygon, aircraftKey: target.key, params: { ...base, gsdCm: 2 } });
+check('GSD 驱动规划成功', byGsd.ok, byGsd.message || '');
+if (byGsd.ok) {
+  console.log(`     GSD 2 cm/px → 航高 ${byGsd.geometry.height} m（原设定 ${base.height} m）`);
+  check('反算出的航高不再是原设定值', byGsd.geometry.height !== base.height, `${byGsd.geometry.height} m`);
+  check('回算 GSD 与目标一致', Math.abs(byGsd.geometry.gsdCm - 2) < 0.05, `${byGsd.geometry.gsdCm} cm/px`);
+}
+
+console.log('\n[4e] 多架次切分');
+const sortied = await plan({ polygon, aircraftKey: target.key, params: { ...base, templateType: 'doubleGrid', maxSortieLengthM: 500 } });
+if (sortied.ok) {
+  check('里程超限时给出架次明细', sortied.plan.sorties.length >= 2, `${sortied.plan.stats.sortieCount} 个架次`);
+  check('架次里程不超过设定上限', sortied.plan.sorties.every((s) => s.lengthM <= 500 + 50), sortied.plan.sorties.map((s) => s.lengthM).join(' / '));
+}
+
 console.log('\n[5] 带状航线');
 const centerline = [
   [113.4930, 23.0910],

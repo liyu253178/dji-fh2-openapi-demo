@@ -99,6 +99,20 @@
             <el-input-number v-model="form.height" :min="20" :max="500" :step="10" size="small" controls-position="right" />
           </div>
           <div class="param">
+            <label>地面分辨率</label>
+            <el-input-number v-model="form.gsdCm" :min="0" :max="50" :step="0.5" size="small" controls-position="right" />
+          </div>
+          <div class="sub-tip">
+            cm/px；填 0 表示按航高作业，填具体值则由它反算相对航高
+          </div>
+          <div v-if="!corridor" class="param">
+            <label>云台俯仰（°）</label>
+            <el-input-number v-model="form.gimbalPitch" :min="-90" :max="-10" :step="5" size="small" controls-position="right" />
+          </div>
+          <div v-if="!corridor" class="sub-tip">
+            −90° 为正射；倾斜摄影建议 −45°～−60°，此时两遍航线的间距会被分别解算
+          </div>
+          <div class="param">
             <label>航速（m/s）</label>
             <el-input-number v-model="form.speed" :min="1" :max="15" :step="1" size="small" controls-position="right" />
           </div>
@@ -158,16 +172,36 @@
             <div class="kv">
               <span>{{ corridor ? '扫线' : '航带' }} / 航点</span>
               <b>{{ preview.plan.stats.stripCount }} / {{ preview.plan.stats.waypointCount }}</b>
-              <span>{{ corridor ? '扫线间距' : '航线间距' }}</span>
-              <b>{{ preview.plan.stats.spacing }} m</b>
+              <template v-if="gridPasses">
+                <span>主航向间距</span><b>{{ gridPasses[0].spacing }} m</b>
+                <span>正交航向间距</span><b>{{ gridPasses[1].spacing }} m</b>
+              </template>
+              <template v-else>
+                <span>{{ corridor ? '扫线间距' : '航线间距' }}</span>
+                <b>{{ preview.plan.stats.spacing }} m</b>
+              </template>
               <span>片基</span><b>{{ preview.plan.stats.base }} m</b>
+              <span>地面分辨率</span><b>{{ preview.geometry?.gsdCm ?? '--' }} cm/px</b>
               <span>里程</span><b>{{ (preview.plan.stats.lengthM / 1000).toFixed(2) }} km</b>
+              <template v-if="preview.plan.stats.sortieCount > 1">
+                <span>架次数</span><b>{{ preview.plan.stats.sortieCount }} 个</b>
+              </template>
+              <template v-if="gridPasses">
+                <span>组间转移</span><b>{{ preview.plan.stats.transitionsM }} m</b>
+              </template>
               <span>预计时长</span><b>{{ preview.plan.stats.durationText }}</b>
               <span>拍照间隔</span><b>{{ preview.plan.stats.shootInterval }} s</b>
               <span>照片数（估）</span><b>{{ preview.plan.stats.photoCount }} 张</b>
             </div>
             <div v-if="preview.measure?.areaM2" class="tip">
               测区约 {{ (preview.measure.areaM2 / 10000).toFixed(2) }} 公顷
+            </div>
+            <div v-if="gridPasses" class="tip muted">
+              {{
+                gridPasses[0].spacing === gridPasses[1].spacing
+                  ? '两遍航线同为正射采集，有效覆盖一致，间距相同。'
+                  : `倾斜摄影下两遍的有效覆盖不同：${gridPasses[0].spacing} m / ${gridPasses[1].spacing} m，按各自的几何解算，保证两个方向的重叠率都达标。`
+              }}
             </div>
             <div class="tip muted">{{ preview.spacingSource.text }}</div>
             <div v-if="preview.adjusted" class="warn">
@@ -229,7 +263,10 @@ const form = reactive({
   overlapW: 70,
   direction: 0,
   margin: 0,
-  /** 带状：中心线左右各外扩多少米，默认 20（总带宽 40） */
+  /** 0 = 不启用，按航高作业；>0 则由 GSD 反算航高 */
+  gsdCm: 0,
+  /** 云台俯仰：-90 正射，倾斜摄影常用 -45 */
+  gimbalPitch: -90,
   corridorHalfWidth: 20,
   extend: 20,
   name: '',
@@ -243,6 +280,11 @@ const generating = ref(false);
 const preview = ref(null);
 const result = ref(null);
 const autoReplan = ref(true);
+
+/** 井字（倾斜航线）两遍各自解算出的几何，用于在结果里对账 */
+const gridPasses = computed(() =>
+  preview.value?.geometry?.passes?.length === 2 ? preview.value.geometry.passes : null
+);
 
 const corridor = computed(() => form.templateType === 'corridor');
 /** 带状：中心线画完了但还没出结果 —— 这时明确问「左右外扩多少」 */
@@ -612,6 +654,8 @@ function buildPayload() {
     margin: form.margin,
     lens: form.lens,
   };
+  if (form.gsdCm > 0) params.gsdCm = form.gsdCm;
+  if (!corridor.value) params.gimbalPitch = form.gimbalPitch;
   const body = { aircraftKey: form.aircraftKey, params };
   if (corridor.value) {
     body.centerline = wgsPoints.value;
