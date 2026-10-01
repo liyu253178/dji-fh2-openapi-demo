@@ -302,6 +302,8 @@ onMounted(async () => {
   markerLayer = L.layerGroup().addTo(map);
   lineLayer = L.layerGroup().addTo(map);
   circleLayer = L.layerGroup().addTo(map);
+  // 调试/自动化验证钩子：从控制台或 Playwright 里能直接检查图层状态
+  if (typeof window !== 'undefined') window.__duavMap = map;
   switchBase(b);
 
   // 容器尺寸变化自动重算，避免地图组件“丢失/空白”
