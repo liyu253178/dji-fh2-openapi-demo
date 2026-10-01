@@ -146,8 +146,15 @@ export const modelApi = {
   /** 组织全量模型（跨项目聚合）；refresh=1 绕过服务端 60s 缓存 */
   list: (refresh) => http.get('/model', refresh ? { params: { refresh: 1 } } : undefined),
   detail: (id) => http.get(`/model/${encodeURIComponent(id)}`),
-  /** 模型包下载并解压，返回包内文件清单（三维渲染前调用） */
-  files: (id) => http.get(`/model/${encodeURIComponent(id)}/files`),
+  /**
+   * 模型包下载并解压，返回包内文件清单（三维渲染 / 二维叠加前调用）
+   *
+   * 全局 timeout 是 60s，但首次打开某个模型要走「CDN 下载整包 + 落盘解压」，
+   * 动辄几分钟——超时后 axios 抛的是没有响应体的 Network Error，
+   * 用户只看到一个「Network Error」弹窗，完全不知道是慢还是坏了。
+   * 这里单独放宽到 15 分钟，配合界面上的进度文案；命中本地缓存时本来就是秒回。
+   */
+  files: (id) => http.get(`/model/${encodeURIComponent(id)}/files`, { timeout: 900000 }),
   /** 单文件读取地址（b3dm / glb / tileset.json） */
   assetSrc: (id, p) =>
     `/api/model/${encodeURIComponent(id)}/asset?path=${encodeURIComponent(p)}`,

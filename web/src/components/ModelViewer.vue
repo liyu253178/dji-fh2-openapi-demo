@@ -20,8 +20,31 @@
     <div v-if="stage" class="viewer-stage small">{{ stage }}</div>
     <div v-if="error" class="viewer-error small">{{ error }}</div>
 
+    <div v-if="mode === '3d'" class="viewer-views">
+      <span class="vv-label">视角</span>
+      <span class="vv-btn" :class="{ on: autoRotate }" title="点击开始自动旋转，再点其他视角停止" @click="toggleAutoRotate">⟳</span>
+      <span class="vv-btn" :class="{ on: activeView === 'top' }" title="俯视图（从上往下看）" @click="setView('top')">俯视</span>
+      <span class="vv-btn" :class="{ on: activeView === 'front' }" title="正视图" @click="setView('front')">正视</span>
+      <span class="vv-btn" :class="{ on: activeView === 'back' }" title="后视图" @click="setView('back')">后视</span>
+      <span class="vv-btn" :class="{ on: activeView === 'left' }" title="左视图" @click="setView('left')">左视</span>
+      <span class="vv-btn" :class="{ on: activeView === 'right' }" title="右视图" @click="setView('right')">右视</span>
+      <span class="vv-btn" title="回到初始视角" @click="setView('home')">复位</span>
+    </div>
+
     <div v-if="mode === '3d'" class="viewer-tip small muted">
-      左键拖动旋转 · 滚轮缩放 · 右键拖动平移（视角越近会自动加载越精细的瓦片）
+      <b>左键</b>拖动平移 · <b>滚轮</b>或<b>右键</b>拖动缩放 · <b>按住滚轮</b>拖动旋转（与大疆智图一致）
+    </div>
+
+    <!-- 悬停读数：证明配准正确的第一手证据 -->
+    <div v-if="mode === '3d' && hoverText" class="viewer-coord small">{{ hoverText }}</div>
+
+    <!-- 量测浮层：跟着光标走，不用抬头去工具栏看数字 -->
+    <div
+      v-if="measureTip"
+      class="viewer-measure small"
+      :style="{ left: `${tipPos.x + 14}px`, top: `${tipPos.y + 14}px` }"
+    >
+      <div v-for="(line, i) in measureTip" :key="i">{{ line }}</div>
     </div>
   </div>
 </template>
@@ -34,6 +57,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { modelApi } from '../api/dji';
+import { ecefToLlh, looksLikeEcef, radiusToDegrees, fmtLlh, fmtArea } from '../utils/ecef';
 
 const props = defineProps({
   modelId: { type: [String, Number], required: true },
@@ -46,7 +70,21 @@ const props = defineProps({
   measureMode: { type: String, default: '' },
 });
 
-const emit = defineEmits(['measure']);
+/**
+ * measure 量测结果（父组件据此显示数值）
+ * geo     模型的真实地理范围（ECEF 反算），父组件据此在卫星底图上画足迹；
+ *         模型没有地理参考时给 { hasGeo:false }，父组件就不画——不猜、不估。
+ */
+const emit = defineEmits(['measure', 'geo']);
+
+/** 视角快捷状态 */
+const autoRotate = ref(false);
+const activeView = ref('');
+/** 悬停处的经纬高读数（只有带地理参考的模型才有） */
+const hoverText = ref('');
+/** 跟随光标的量测读数（多行） */
+const measureTip = ref(null);
+const tipPos = ref({ x: 0, y: 0 });
 
 /** 量测：拾取点与辅助线都挂在 measureGroup 下，清除时一次性 dispose */
 let measureGroup = null;
@@ -54,11 +92,11 @@ const measurePts = [];
 /** 当前模型包围盒最大边长（米），用于自适应测点大小 */
 let modelSize = 0;
 
-/** 供父组件调用：清空量测结果 */
+/** 供父组件调用：清空量测 / 撤销上一个点 / 结束本次测量 */
 function resetMeasure() {
   clearMeasure();
 }
-defineExpose({ resetMeasure });
+defineExpose({ resetMeasure, undoPoint, finishMeasure, setView, toggleAutoRotate });
 
 const canvasWrap = ref(null);
 const mode = ref('');
@@ -421,9 +459,29 @@ function initThree() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
+  /**
+   * 鼠标方案对齐《大疆智图用户手册》「视角操作」一节：
+   *   平移 = 按住左键拖动
+   *   缩放 = 滚动滚轮，或按住右键拖动
+   *   旋转 = 按住滚轮（中键）拖动
+   * three 的 OrbitControls 默认是「左键旋转 / 右键平移」，与智图正好相反，
+   * 习惯智图的人过来会觉得完全不可控，所以这里显式改成智图的键位。
+   */
+  controls.mouseButtons = {
+    LEFT: THREE.MOUSE.PAN,
+    MIDDLE: THREE.MOUSE.ROTATE,
+    RIGHT: THREE.MOUSE.DOLLY,
+  };
+  // 滚轮缩放速度：默认 1.0 在大场景里一格就跑很远，收一半更好控
+  controls.zoomSpeed = 0.85;
+  controls.rotateSpeed = 0.85;
+  controls.panSpeed = 0.9;
   // 注意：change 事件会把事件对象当参数传进来，这里必须包一层，
   // 否则 immediate 会被事件对象判成 true，拖动时每帧都重算 LOD
-  controls.addEventListener('change', () => scheduleUpdate());
+  controls.addEventListener('change', () => {
+    needRender = true;
+    scheduleUpdate();
+  });
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.95));
   const d1 = new THREE.DirectionalLight(0xffffff, 0.75);
@@ -441,11 +499,28 @@ function initThree() {
   // 量测辅助线画在 world 下：跟着模型一起被转正/平移，坐标与模型一致
   world.add(measureGroup);
   renderer.domElement.addEventListener('pointerdown', onCanvasPointerDown);
+  renderer.domElement.addEventListener('pointermove', onCanvasPointerMove);
+  renderer.domElement.addEventListener('contextmenu', onCanvasContextMenu);
 
+  /**
+   * 按需渲染，而不是无脑 60fps 重画。
+   *
+   * 大模型场景里每帧都要重绘几百万三角面，GPU 一直满载会导致风扇狂转、
+   * 拖动掉帧，甚至把整个页面拖卡（用户反馈的「渲染慢」多数是这里来的）。
+   * 静止时不重画：只有 controls 发生变化（拖动 / 阻尼衰减 / 自动旋转）
+   * 或有新瓦片、新测点进来时才画一帧。
+   */
   const loop = () => {
     frameId = requestAnimationFrame(loop);
+    // OrbitControls.update() 返回 true 表示这一帧相机确实变了
+    if (controls.update() || autoRotate.value) needRender = true;
+    if (hoverPickPending) {
+      hoverPickPending = false;
+      doHoverPick();
+    }
+    if (!needRender) return;
+    needRender = false;
     frameCount += 1;
-    controls.update();
     renderer.render(scene, camera);
   };
   loop();
@@ -454,37 +529,322 @@ function initThree() {
   ro.observe(canvasWrap.value);
 }
 
+/* ---------------- 拾取与量测（对齐大疆智图） ---------------- */
+/** 按需渲染标记：只有相机变化 / 新内容进来才重画 */
+let needRender = true;
+/** 悬停拾取待处理标记：真正的射线求交放到渲染帧里做，且按节流间隔执行 */
+let hoverPickPending = false;
+let lastPickMs = 0;
+const raycaster = new THREE.Raycaster();
+/** 上一次指针位置（客户端坐标），节流后的拾取用 */
+const pointer = { clientX: 0, clientY: 0, downX: 0, downY: 0, button: -1 };
+/** 橡皮筋预览线：每次移动都会重建，单独留引用便于 dispose */
+let previewLine = null;
+/** 模型的真实地理范围（ECEF 反算），无地理参考时为 null */
+let geoInfo = null;
+/** world 旋转的逆矩阵：渲染坐标 → ECEF */
+const upFixInv = new THREE.Matrix4();
+
+/** 渲染坐标 → ECEF → 经纬高（需要模型本身带地理参考） */
+function renderedToLlh(p) {
+  if (!geoInfo?.hasGeo) return null;
+  const e = p.clone().applyMatrix4(upFixInv).add(origin);
+  const [lon, lat, h] = ecefToLlh(e.x, e.y, e.z);
+  return { lon, lat, h };
+}
+
 /**
- * 量测取点：从相机发射线，命中模型表面即取该点。
- * OrbitControls 也在监听 pointerdown，但拖拽时位移很小——
- * 用「按下与抬起的位移 < 4px」来区分「拖动旋转」和「点击取点」，避免转视角时误加测点。
+ * 遍历所有瓦片，把 ECEF 包围球换算成经纬度范围。
+ *
+ * asset.gltfUpAxis === "Z" 且中心矢量模长在地球半径量级，才认它是真 ECEF；
+ * 自制 tileset / 局部坐标模型（Y-up）没有地理参考，
+ * 这类情况下宁可如实返回 hasGeo:false，也不能拿局部坐标去反算经纬度糊弄人。
+ */
+function computeGeo() {
+  if (upAxis !== 'Z' || !tree?.centerWorld) return null;
+  const isEcef = looksLikeEcef(tree.centerWorld.x, tree.centerWorld.y, tree.centerWorld.z);
+  if (!isEcef) return null;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let hasH = false;
+  let minH = Infinity;
+  let maxH = -Infinity;
+  const walk = (n) => {
+    if (!n) return;
+    if (n.centerWorld) {
+      const [lon, lat, h] = ecefToLlh(n.centerWorld.x, n.centerWorld.y, n.centerWorld.z);
+      const d = radiusToDegrees(lat, n.radius || 0);
+      minLon = Math.min(minLon, lon - d.dLon);
+      maxLon = Math.max(maxLon, lon + d.dLon);
+      minLat = Math.min(minLat, lat - d.dLat);
+      maxLat = Math.max(maxLat, lat + d.dLat);
+      minH = Math.min(minH, h);
+      maxH = Math.max(maxH, h);
+      hasH = true;
+    }
+    n.children?.forEach(walk);
+  };
+  walk(tree);
+  if (!Number.isFinite(minLon) || !Number.isFinite(minLat) || minLon === Infinity) return null;
+  const c = ecefToLlh(tree.centerWorld.x, tree.centerWorld.y, tree.centerWorld.z);
+  return {
+    hasGeo: true,
+    minLon,
+    maxLon,
+    minLat,
+    maxLat,
+    lon: c[0],
+    lat: c[1],
+    height: c[2],
+    minH: hasH ? minH : null,
+    maxH: hasH ? maxH : null,
+    radiusM: Math.round(tree.radius || 0),
+  };
+}
+
+/**
+ * 射线拾取：先用包围球粗筛再精确求交。
+ *
+ * 直接 intersectObject(world, true) 会把几百个瓦片的所有三角面遍历一遍，
+ * 悬停预览时每帧一次的开销肉眼可见地卡（这就是「量测很卡」的直接原因）。
+ * 先按瓦片包围球过滤，只对真正可能命中的瓦片做三角面级求交。
+ */
+function raycastModel(clientX, clientY) {
+  if (!renderer || !camera || !group) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = -((clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(new THREE.Vector2(nx, ny), camera);
+  // 点云的拾取阈值要跟着模型尺度走，点太稀时默认阈值永远拾取不到
+  raycaster.params.Points.threshold = Math.max(0.2, (modelSize || 100) / 300);
+  const sphere = new THREE.Sphere();
+  const targets = [];
+  for (const child of group.children) {
+    let hit = false;
+    child.traverse((o) => {
+      if (hit || !o.geometry || !o.visible) return;
+      if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+      const bs = o.geometry.boundingSphere;
+      if (!bs) return;
+      sphere.center.copy(bs.center).applyMatrix4(o.matrixWorld);
+      sphere.radius = bs.radius * Math.max(o.matrixWorld.getMaxScaleOnAxis(), 1e-6);
+      if (raycaster.ray.intersectsSphere(sphere)) hit = true;
+    });
+    if (hit) targets.push(child);
+  }
+  if (!targets.length) return null;
+  const hits = raycaster.intersectObjects(targets, true);
+  return hits.length ? hits[0] : null;
+}
+
+function onCanvasPointerMove(e) {
+  pointer.clientX = e.clientX;
+  pointer.clientY = e.clientY;
+  hoverPickPending = true;
+}
+
+/** 节流后的悬停处理：更新橡皮筋预览 + 经纬高读数 */
+function doHoverPick() {
+  const now = performance.now();
+  if (now - lastPickMs < 40) return;
+  lastPickMs = now;
+  if (!renderer || !camera) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  tipPos.value = { x: pointer.clientX - rect.left, y: pointer.clientY - rect.top };
+
+  // 没开量测且模型没有地理参考时不必拾取，省掉一次全场景求交
+  if (!props.measureMode && !geoInfo?.hasGeo) {
+    hoverText.value = '';
+    measureTip.value = null;
+    clearPreview();
+    return;
+  }
+  const picked = raycastModel(pointer.clientX, pointer.clientY);
+  const llh = picked ? renderedToLlh(picked.point) : null;
+  hoverText.value = picked
+    ? llh
+      ? fmtLlh(llh.lon, llh.lat, llh.h)
+      : '已命中模型 · 该模型不带地理参考，无法给出经纬度'
+    : '';
+  drawPreview(picked);
+}
+
+/** 橡皮筋预览：从上一个测点拉一条虚线到光标位置，光标离开模型时沿射线取等效点 */
+function drawPreview(picked) {
+  clearPreview();
+  if (!props.measureMode || !measurePts.length) {
+    measureTip.value = null;
+    return;
+  }
+  const last = measurePts[measurePts.length - 1];
+  let tip = picked ? picked.point.clone() : null;
+  if (!tip) {
+    // 光标不在模型上：沿射线取到「与上一个测点同深度」的位置，线不会突然消失
+    const rect = renderer.domElement.getBoundingClientRect();
+    const nx = ((pointer.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = -((pointer.clientY - rect.top) / rect.height) * 2 + 1;
+    const tmp = new THREE.Raycaster();
+    tmp.setFromCamera(new THREE.Vector2(nx, ny), camera);
+    tip = tmp.ray.at(camera.position.distanceTo(last), new THREE.Vector3());
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints([last, tip]);
+  previewLine = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: 0x8ab4ff, dashSize: 0.8, gapSize: 0.5 }));
+  previewLine.computeLineDistances();
+  measureGroup.add(previewLine);
+  measureTip.value = previewValue(tip, true);
+  needRender = true;
+}
+
+function clearPreview() {
+  if (!previewLine || !measureGroup) return;
+  measureGroup.remove(previewLine);
+  previewLine.geometry?.dispose?.();
+  previewLine.material?.dispose?.();
+  previewLine = null;
+  needRender = true;
+}
+
+/**
+ * 按大疆智图「标注与测量」的口径出数：
+ *   距离 = 直线距离（三维空间长度）+ 水平距离（投影到水平面）+ 垂直距离 + 坡度
+ *   面积 = 投影面积（沿高程方向投影）+ 拟合面积（多点拟合平面上的真实面积）
+ * 预览态带上最后一段，最终态是当前所有测点的结果。
+ */
+function previewValue(tip, isPreview) {
+  const pts = isPreview ? [...measurePts, tip] : measurePts;
+  if (pts.length < 2) return isPreview ? ['再点击一个位置'] : null;
+  const mode = props.measureMode;
+  const out = [];
+  if (mode === 'distance') {
+    let lineSum = 0;
+    let flatSum = 0;
+    for (let i = 1; i < pts.length; i += 1) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      lineSum += a.distanceTo(b);
+      flatSum += Math.hypot(b.x - a.x, b.z - a.z);
+    }
+    const dh = pts[pts.length - 1].y - pts[0].y;
+    const slope = flatSum > 1e-6 ? (dh / flatSum) * 100 : 0;
+    out.push(`直线 ${lineSum.toFixed(2)} m`);
+    out.push(`水平 ${flatSum.toFixed(2)} m`);
+    out.push(`垂直 ${dh.toFixed(2)} m`);
+    out.push(`坡度 ${slope.toFixed(1)} %`);
+    if (isPreview) out.push('右键结束测量');
+    return out;
+  }
+  if (mode === 'height') {
+    const dh = pts[pts.length - 1].y - pts[0].y;
+    out.push(`高差 ${Math.abs(dh).toFixed(2)} m`);
+    out.push(`起点→终点 ${dh >= 0 ? '升高' : '降低'}`);
+    return out;
+  }
+  if (mode === 'area') {
+    if (pts.length < 3) {
+      out.push(`还需 ${3 - pts.length} 个点`);
+      if (isPreview) out.push('右键结束测量');
+      return out;
+    }
+    out.push(`投影面积 ${fmtArea(projectedArea(pts))}`);
+    const fit = fittedArea(pts);
+    if (fit) out.push(`拟合面积 ${fmtArea(fit)}`);
+    if (isPreview) out.push('右键结束测量');
+    return out;
+  }
+  return null;
+}
+
+/** 投影面积：水平面（X-Z）上的鞋带公式，等同于大疆智图的「投影面积」 */
+function projectedArea(pts) {
+  let s = 0;
+  for (let i = 0, n = pts.length; i < n; i += 1) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    s += a.x * b.z - b.x * a.z;
+  }
+  return Math.abs(s) / 2;
+}
+
+/**
+ * 拟合面积：先按 Newell 法求出多点拟合平面的法向量，
+ * 再把点投影到该平面内做二维鞋带公式——这才是不平整表面上的真实面积。
+ */
+function fittedArea(pts) {
+  if (pts.length < 3) return null;
+  const n = new THREE.Vector3();
+  for (let i = 0; i < pts.length; i += 1) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    n.x += (a.y - b.y) * (a.z + b.z);
+    n.y += (a.z - b.z) * (a.x + b.x);
+    n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  if (n.length() < 1e-9) return projectedArea(pts); // 退化成平面：拟合面积 = 投影面积
+  const nz = n.normalize();
+  // 在拟合平面内构造正交基（u 尽量贴近世界 X 轴，避免退化）
+  const u = new THREE.Vector3(1, 0, 0);
+  if (Math.abs(nz.dot(u)) > 0.9) u.set(0, 0, 1);
+  u.crossVectors(nz, u).normalize();
+  const v = new THREE.Vector3().crossVectors(nz, u).normalize();
+  let s = 0;
+  for (let i = 0; i < pts.length; i += 1) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    s += a.dot(u) * b.dot(v) - b.dot(u) * a.dot(v);
+  }
+  return Math.abs(s) / 2;
+}
+
+/**
+ * 取点：左键单击（位移 < 4px）加一个测点，右键单击（同样判定）结束本次测量。
+ * 位移阈值是为了把「拖动视角」和「点击取点」分开，否则转个身就多出一堆测点。
  */
 function onCanvasPointerDown(e) {
-  if (!props.measureMode || !renderer || !camera) return;
-  const startX = e.clientX;
-  const startY = e.clientY;
+  pointer.button = e.button;
+  pointer.downX = e.clientX;
+  pointer.downY = e.clientY;
+  const isDrag = () => Math.hypot(pointer.clientX - pointer.downX, pointer.clientY - pointer.downY) > 4;
+  if (e.button === 2 && props.measureMode) {
+    // 右键：拖动是缩放（智图键位），只有「没怎么动」的右键才算结束测量
+    const up = (ev) => {
+      renderer.domElement.removeEventListener('pointerup', up);
+      if (isDrag()) return;
+      if (measurePts.length) finishMeasure();
+      void ev;
+    };
+    renderer.domElement.addEventListener('pointerup', up);
+    return;
+  }
+  if (e.button !== 0 || !props.measureMode || !renderer || !camera) return;
   const up = (ev) => {
     renderer.domElement.removeEventListener('pointerup', up);
-    if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) return;
-    pickMeasurePoint(ev);
+    if (Math.hypot(ev.clientX - pointer.downX, ev.clientY - pointer.downY) > 4) return;
+    const picked = raycastModel(ev.clientX, ev.clientY);
+    // 没点到模型就不加测点：宁可没反应，也不能在背景平面上生成一个假点
+    if (picked) addMeasurePoint(picked.point.clone());
   };
   renderer.domElement.addEventListener('pointerup', up);
 }
 
-function pickMeasurePoint(e) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-  const ray = new THREE.Raycaster();
-  ray.setFromCamera(new THREE.Vector2(x, y), camera);
-  const hits = ray.intersectObject(world, true);
-  // 点云（THREE.Points）需要放宽阈值才拾取得到
-  const hit = hits.find((h) => h.point) || null;
-  if (!hit) return;
-  addMeasurePoint(hit.point.clone());
+/** 右键默认弹浏览器菜单，量测时它会挡住「右键结束」手势 */
+function onCanvasContextMenu(e) {
+  if (props.measureMode) e.preventDefault();
 }
 
+
+/** dots[i] 对应 measurePts[i]，lines[i] 对应 i→i+1 段，撤销时按这个顺序回退 */
+const dots = [];
+const lines = [];
+let measureFinished = false;
+
 function addMeasurePoint(p) {
+  // 上一次已经右键结束过：再点就是新一轮，先把旧的清掉，避免两条折线混在一起
+  if (measureFinished) {
+    clearMeasure();
+    measureFinished = false;
+  }
   measurePts.push(p);
   const dot = new THREE.Mesh(
     new THREE.SphereGeometry(measurePointRadius(), 10, 8),
@@ -492,12 +852,43 @@ function addMeasurePoint(p) {
   );
   dot.position.copy(p);
   measureGroup.add(dot);
+  dots.push(dot);
 
   if (measurePts.length > 1) {
     const geo = new THREE.BufferGeometry().setFromPoints([measurePts[measurePts.length - 2], p]);
-    measureGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x22d3ee })));
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x22d3ee }));
+    measureGroup.add(line);
+    lines.push(line);
   }
-  scheduleUpdate(true);
+  needRender = true;
+  emitMeasure();
+}
+
+/** 撤销上一个测点（对应智图界面上的「删除所选点」图标） */
+function undoPoint() {
+  if (measureFinished) return clearMeasure();
+  const dot = dots.pop();
+  if (dot) {
+    measureGroup.remove(dot);
+    dot.geometry?.dispose?.();
+    dot.material?.dispose?.();
+  }
+  const line = lines.pop();
+  if (line) {
+    measureGroup.remove(line);
+    line.geometry?.dispose?.();
+    line.material?.dispose?.();
+  }
+  measurePts.pop();
+  needRender = true;
+  emitMeasure();
+}
+
+/** 右键结束：把当前结果定下来，图形留在画面上供对照 */
+function finishMeasure() {
+  measureFinished = true;
+  clearPreview();
+  measureTip.value = null;
   emitMeasure();
 }
 
@@ -509,35 +900,38 @@ function measurePointRadius() {
 
 function emitMeasure() {
   const mode = props.measureMode;
-  const pts = measurePts.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+  const points = measurePts.map((p) => {
+    const llh = renderedToLlh(p);
+    return { x: p.x, y: p.y, z: p.z, lon: llh?.lon ?? null, lat: llh?.lat ?? null, h: llh?.h ?? null };
+  });
+  const linesArr = previewValue(null, false) || [];
   let value = 0;
-  let text = '';
   if (mode === 'distance') {
-    let sum = 0;
-    for (let i = 1; i < measurePts.length; i++) sum += measurePts[i].distanceTo(measurePts[i - 1]);
-    value = sum;
-    text = `距离 ${sum.toFixed(2)} m`;
-  } else if (mode === 'area' && measurePts.length >= 3) {
-    // 水平投影面积（鞋带公式）：模型已转正，Y 轴朝上，用 X-Z 平面算
-    let s = 0;
-    for (let i = 0, n = measurePts.length; i < n; i++) {
-      const a = measurePts[i];
-      const b = measurePts[(i + 1) % n];
-      s += a.x * b.z - b.x * a.z;
-    }
-    value = Math.abs(s) / 2;
-    text = `面积 ${value.toFixed(2)} ㎡`;
+    for (let i = 1; i < measurePts.length; i += 1) value += measurePts[i].distanceTo(measurePts[i - 1]);
   } else if (mode === 'height' && measurePts.length >= 2) {
-    const dy = measurePts[measurePts.length - 1].y - measurePts[measurePts.length - 2].y;
-    value = Math.abs(dy);
-    text = `高差 ${value.toFixed(2)} m`;
+    value = Math.abs(measurePts[measurePts.length - 1].y - measurePts[measurePts.length - 2].y);
+  } else if (mode === 'area' && measurePts.length >= 3) {
+    value = projectedArea(measurePts);
   }
-  emit('measure', { mode, points: pts, value, text });
+  emit('measure', {
+    mode,
+    points,
+    value,
+    text: measurePts.length ? linesArr.join(' · ') : '',
+    lines: linesArr,
+    finished: measureFinished,
+  });
 }
 
 /** 清空量测（切换模式 / 换模型时调用） */
 function clearMeasure() {
   measurePts.length = 0;
+  dots.length = 0;
+  lines.length = 0;
+  measureFinished = false;
+  clearPreview();
+  measureTip.value = null;
+  hoverText.value = '';
   if (!measureGroup) return;
   for (const o of [...measureGroup.children]) {
     measureGroup.remove(o);
@@ -545,7 +939,65 @@ function clearMeasure() {
     if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
     else o.material?.dispose?.();
   }
-  emit('measure', { mode: props.measureMode, points: [], value: 0, text: '' });
+  needRender = true;
+  emit('measure', { mode: props.measureMode, points: [], value: 0, text: '', lines: [], finished: false });
+}
+
+/* ---------------- 视角快捷（对齐智图「俯视图 / 正视图 / 自动旋转」） ---------------- */
+/** 各视角的相机方向：单位球坐标 azimuth/polar，polar=0 为正上方 */
+const VIEWS = {
+  top: [0, 0.001], // 正上方（留一点角度避免 up 向量退化）
+  front: [0, Math.PI / 2],
+  back: [Math.PI, Math.PI / 2],
+  left: [-Math.PI / 2, Math.PI / 2],
+  right: [Math.PI / 2, Math.PI / 2],
+  home: [Math.PI / 4, Math.PI / 3],
+};
+
+function applySpherical(azimuth, polar, distance) {
+  const radius = Math.max(tree?.radius || modelSize || 10, 1);
+  const d = distance || radius * 2.6;
+  const target = controls.target;
+  const sinP = Math.sin(polar);
+  camera.position.set(
+    target.x + d * sinP * Math.sin(azimuth),
+    target.y + d * Math.cos(polar),
+    target.z + d * sinP * Math.cos(azimuth)
+  );
+  camera.up.set(0, 1, 0);
+  camera.lookAt(target);
+  camera.updateProjectionMatrix();
+  controls.update();
+  needRender = true;
+  scheduleUpdate(true);
+}
+
+function setView(key) {
+  const v = VIEWS[key];
+  if (!v || !controls) return;
+  activeView.value = key;
+  if (key === 'home') {
+    activeView.value = '';
+    const radius = Math.max(tree?.radius || modelSize || 10, 1);
+    controls.target.set(0, 0, 0);
+    applySpherical(Math.PI / 4, Math.PI / 3, radius * 2.6);
+    return;
+  }
+  // 切到别的视角要停掉自动旋转，与智图行为一致
+  if (controls.autoRotate) controls.autoRotate = false;
+  autoRotate.value = false;
+  applySpherical(v[0], v[1]);
+}
+
+function toggleAutoRotate() {
+  if (!controls) return;
+  const on = !controls.autoRotate;
+  controls.autoRotate = on;
+  controls.autoRotateSpeed = 1.2;
+  autoRotate.value = on;
+  activeView.value = '';
+  needRender = true;
+  scheduleUpdate(true);
 }
 
 function resize() {
@@ -614,7 +1066,10 @@ function updateVisibility() {
     const st = nodeState.get(id);
     if (!st) continue;
     st.lastUsed = frameCount;
-    if (st.scene && !st.scene.parent) group.add(st.scene);
+    if (st.scene && !st.scene.parent) {
+      group.add(st.scene);
+      needRender = true;
+    }
   }
 
   // 显存预算：超限就按最久未用淘汰（只淘汰当前不需要、且确有显存可回收的）
@@ -726,6 +1181,7 @@ function pump() {
         gpuBytes += st.bytes;
         st.lastUsed = frameCount;
         if (desired.has(node.id)) group.add(obj);
+        needRender = true; // 新瓦片进场景，静止状态下也要补画一帧
         pump();
         refreshStage();
       })
@@ -920,6 +1376,8 @@ async function build() {
   // 不能作用到单个瓦片后再乘 ECEF 变换，否则姿态会歪
   upFix.identity();
   if (isEcef) upFix.makeRotationX(-Math.PI / 2);
+  // 渲染坐标 → ECEF 的逆变换（upFix 是纯旋转，逆矩阵即转置），量测取点要靠它算经纬度
+  upFixInv.copy(upFix).transpose();
 
   initThree();
   world.rotation.setFromRotationMatrix(upFix);
@@ -940,6 +1398,11 @@ async function build() {
   mode.value = '3d';
   resize();
   updateVisibility();
+
+  // 解析完瓦片索引就能算真实地理范围了：反算出的中心经纬度应与模型实际位置一致，
+  // 这是「模型有没有配准到正确位置」唯一的自校验手段，父组件据此在底图上画足迹。
+  geoInfo = computeGeo();
+  emit('geo', geoInfo || { hasGeo: false });
 }
 
 /** 平铺模式（无 tileset）下的居中与相机 */
@@ -983,7 +1446,15 @@ function dispose() {
   if (freed) console.info(`[ModelViewer] 已释放 ${freed} 个瓦片的 GPU 资源`);
   if (renderer?.domElement) {
     renderer.domElement.removeEventListener('pointerdown', onCanvasPointerDown);
+    renderer.domElement.removeEventListener('pointermove', onCanvasPointerMove);
+    renderer.domElement.removeEventListener('contextmenu', onCanvasContextMenu);
   }
+  previewLine = null;
+  geoInfo = null;
+  activeView.value = '';
+  autoRotate.value = false;
+  hoverText.value = '';
+  measureTip.value = null;
   if (renderer) {
     renderer.dispose();
     // forceContextLoss：让浏览器立刻归还 WebGL 上下文占用的显存，
@@ -1036,5 +1507,39 @@ watch(
   position: absolute; left: 12px; right: 12px; top: 12px;
   color: var(--c-warn); background: rgba(0, 0, 0, 0.55); padding: 6px 10px; border-radius: 6px;
 }
-.viewer-tip { position: absolute; left: 12px; bottom: 10px; }
+.viewer-tip {
+  position: absolute; right: 12px; bottom: 10px; z-index: 5;
+  background: rgba(10, 16, 26, 0.82); border: 1px solid var(--c-line);
+  border-radius: 6px; padding: 4px 8px; pointer-events: none;
+}
+.viewer-tip b { color: var(--c-brand); font-weight: 600; }
+
+/* 光标处的经纬高读数：用来当场验证「模型配准到了正确位置」 */
+.viewer-coord {
+  position: absolute; left: 12px; bottom: 10px; z-index: 5;
+  background: rgba(10, 16, 26, 0.82); border: 1px solid var(--c-line);
+  border-radius: 6px; padding: 4px 8px; pointer-events: none;
+  color: var(--c-text-2); font-variant-numeric: tabular-nums;
+}
+/* 跟随光标的量测读数，省得抬头去工具栏找数字 */
+.viewer-measure {
+  position: absolute; z-index: 6; pointer-events: none;
+  background: rgba(10, 16, 26, 0.92); border: 1px solid var(--c-brand);
+  color: var(--c-text-1); border-radius: 6px; padding: 5px 9px; line-height: 1.7;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* 视角快捷按钮：对齐大疆智图的自动旋转 / 俯视 / 正视 */
+.viewer-views {
+  position: absolute; right: 12px; top: 12px; z-index: 6;
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  background: rgba(10, 16, 26, 0.86); border: 1px solid var(--c-line);
+  border-radius: 8px; padding: 5px 7px;
+}
+.vv-label { font-size: 11px; color: var(--c-text-3); margin-right: 2px; }
+.vv-btn {
+  font-size: 11px; padding: 3px 7px; border-radius: 5px; cursor: pointer;
+  color: var(--c-text-2); border: 1px solid transparent; user-select: none;
+}
+.vv-btn:hover { color: var(--c-brand); border-color: var(--c-line); background: rgba(255, 255, 255, 0.04); }
+.vv-btn.on { color: var(--c-brand); border-color: var(--c-brand); background: rgba(34, 211, 238, 0.12); }
 </style>
