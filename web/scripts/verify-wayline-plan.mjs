@@ -80,9 +80,13 @@ const navInfo = await p.evaluate(() => ({
 ok('规划工作台直达', navInfo.path.replace(/\/+$/, '') === '/wayline/plan', navInfo.path);
 ok('侧边栏含「航线规划」一级栏目', navInfo.text.includes('航线规划'));
 ok('底图不再显示「暂无坐标」提示', !navInfo.text.includes('暂无坐标'));
+ok('类型按钮为「正射航线 / 倾斜航线 / 带状航线」',
+  navInfo.text.includes('正射航线') && navInfo.text.includes('倾斜航线') && navInfo.text.includes('带状航线'));
+ok('旧「井字」叫法已下线', !navInfo.text.includes('井字'));
+ok('类型卡不再带介绍小字', !navInfo.text.includes('固定角度往返扫描'));
 
 console.log('\n[2] 带状：画中心线后主动询问左右外扩');
-await clickText('带状');
+await clickText('带状航线');
 await p.waitForTimeout(500);
 const box = await p.locator('.plan-map').boundingBox();
 ok('地图区域存在', !!box);
@@ -121,10 +125,21 @@ ok('放大后顶点数不变（等比缩放）', scaled === before, `${before} �
 const autoOn = await p.evaluate(() => document.body.innerText.includes('范围改动后自动重算航线'));
 ok('自动重算开关可见', autoOn);
 
+console.log('\n[4] 切换类型不丢图形（面保留，直接重算）');
+await clickText('正射航线');
+await p.waitForTimeout(800);
+const switched = await p.evaluate(() => ({
+  text: document.body.innerText,
+  handles: document.querySelectorAll('.plan-handle').length,
+}));
+const m2 = switched.text.match(/已选 (\d+) 点/);
+ok('切换正射后顶点保留', !!m2 && Number(m2[1]) >= 2, m2 ? m2[1] + ' 点' : '未匹配');
+ok('顶点手柄仍在（面可继续拖拽）', switched.handles > 0, `${switched.handles} 个`);
+
 await p.screenshot({ path: shot, fullPage: false });
 console.log(`\n  截图：${shot}`);
 
-console.log('\n[4] 控制台');
+console.log('\n[5] 控制台');
 const realErrs = errs.filter((t) => !/favicon|net::ERR_/i.test(t));
 ok('无控制台错误', realErrs.length === 0, realErrs.slice(0, 3).join(' | '));
 
