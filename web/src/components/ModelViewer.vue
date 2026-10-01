@@ -38,7 +38,27 @@ import { modelApi } from '../api/dji';
 const props = defineProps({
   modelId: { type: [String, Number], required: true },
   modelName: { type: String, default: '' },
+  /**
+   * 量测模式：'' | 'distance' | 'area' | 'height'
+   * 开启后点击模型取点，按模式实时计算并 emit('measure')。
+   * 场景是「平移到原点 + Z-up 转正」后的米制空间，所以点与点之差就是米。
+   */
+  measureMode: { type: String, default: '' },
 });
+
+const emit = defineEmits(['measure']);
+
+/** 量测：拾取点与辅助线都挂在 measureGroup 下，清除时一次性 dispose */
+let measureGroup = null;
+const measurePts = [];
+/** 当前模型包围盒最大边长（米），用于自适应测点大小 */
+let modelSize = 0;
+
+/** 供父组件调用：清空量测结果 */
+function resetMeasure() {
+  clearMeasure();
+}
+defineExpose({ resetMeasure });
 
 const canvasWrap = ref(null);
 const mode = ref('');
@@ -417,6 +437,10 @@ function initThree() {
   scene.add(world);
   group = new THREE.Group();
   world.add(group);
+  measureGroup = new THREE.Group();
+  // 量测辅助线画在 world 下：跟着模型一起被转正/平移，坐标与模型一致
+  world.add(measureGroup);
+  renderer.domElement.addEventListener('pointerdown', onCanvasPointerDown);
 
   const loop = () => {
     frameId = requestAnimationFrame(loop);
@@ -428,6 +452,100 @@ function initThree() {
 
   ro = new ResizeObserver(() => resize());
   ro.observe(canvasWrap.value);
+}
+
+/**
+ * 量测取点：从相机发射线，命中模型表面即取该点。
+ * OrbitControls 也在监听 pointerdown，但拖拽时位移很小——
+ * 用「按下与抬起的位移 < 4px」来区分「拖动旋转」和「点击取点」，避免转视角时误加测点。
+ */
+function onCanvasPointerDown(e) {
+  if (!props.measureMode || !renderer || !camera) return;
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const up = (ev) => {
+    renderer.domElement.removeEventListener('pointerup', up);
+    if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) return;
+    pickMeasurePoint(ev);
+  };
+  renderer.domElement.addEventListener('pointerup', up);
+}
+
+function pickMeasurePoint(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(x, y), camera);
+  const hits = ray.intersectObject(world, true);
+  // 点云（THREE.Points）需要放宽阈值才拾取得到
+  const hit = hits.find((h) => h.point) || null;
+  if (!hit) return;
+  addMeasurePoint(hit.point.clone());
+}
+
+function addMeasurePoint(p) {
+  measurePts.push(p);
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(measurePointRadius(), 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffb020 })
+  );
+  dot.position.copy(p);
+  measureGroup.add(dot);
+
+  if (measurePts.length > 1) {
+    const geo = new THREE.BufferGeometry().setFromPoints([measurePts[measurePts.length - 2], p]);
+    measureGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x22d3ee })));
+  }
+  scheduleUpdate(true);
+  emitMeasure();
+}
+
+/** 测点小球半径：按模型尺度取，避免大模型上小到看不见 */
+function measurePointRadius() {
+  const size = modelSize || 100;
+  return Math.max(0.15, size / 400);
+}
+
+function emitMeasure() {
+  const mode = props.measureMode;
+  const pts = measurePts.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+  let value = 0;
+  let text = '';
+  if (mode === 'distance') {
+    let sum = 0;
+    for (let i = 1; i < measurePts.length; i++) sum += measurePts[i].distanceTo(measurePts[i - 1]);
+    value = sum;
+    text = `距离 ${sum.toFixed(2)} m`;
+  } else if (mode === 'area' && measurePts.length >= 3) {
+    // 水平投影面积（鞋带公式）：模型已转正，Y 轴朝上，用 X-Z 平面算
+    let s = 0;
+    for (let i = 0, n = measurePts.length; i < n; i++) {
+      const a = measurePts[i];
+      const b = measurePts[(i + 1) % n];
+      s += a.x * b.z - b.x * a.z;
+    }
+    value = Math.abs(s) / 2;
+    text = `面积 ${value.toFixed(2)} ㎡`;
+  } else if (mode === 'height' && measurePts.length >= 2) {
+    const dy = measurePts[measurePts.length - 1].y - measurePts[measurePts.length - 2].y;
+    value = Math.abs(dy);
+    text = `高差 ${value.toFixed(2)} m`;
+  }
+  emit('measure', { mode, points: pts, value, text });
+}
+
+/** 清空量测（切换模式 / 换模型时调用） */
+function clearMeasure() {
+  measurePts.length = 0;
+  if (!measureGroup) return;
+  for (const o of [...measureGroup.children]) {
+    measureGroup.remove(o);
+    o.geometry?.dispose?.();
+    if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
+    else o.material?.dispose?.();
+  }
+  emit('measure', { mode: props.measureMode, points: [], value: 0, text: '' });
 }
 
 function resize() {
@@ -576,6 +694,8 @@ function updateBounds() {
   if (box.isEmpty()) return;
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
+  // 量测测点的大小要跟着模型尺度走，否则大模型上测点小到看不见
+  modelSize = Math.max(size.x, size.y, size.z) || 0;
   const f = (v) => v.toFixed(1);
   bboxInfo.value = `${f(size.x)},${f(size.y)},${f(size.z)}|${f(center.x)},${f(center.y)},${f(center.z)}`;
 }
@@ -861,6 +981,9 @@ function dispose() {
   active = 0;
   tree = null;
   if (freed) console.info(`[ModelViewer] 已释放 ${freed} 个瓦片的 GPU 资源`);
+  if (renderer?.domElement) {
+    renderer.domElement.removeEventListener('pointerdown', onCanvasPointerDown);
+  }
   if (renderer) {
     renderer.dispose();
     // forceContextLoss：让浏览器立刻归还 WebGL 上下文占用的显存，
@@ -885,9 +1008,12 @@ onBeforeUnmount(() => {
   sharedKTX2?.dispose?.();
   sharedKTX2 = null;
 });
+watch(() => props.measureMode, () => clearMeasure());
+
 watch(
   () => props.modelId,
   () => {
+    clearMeasure();
     dispose();
     build();
   }

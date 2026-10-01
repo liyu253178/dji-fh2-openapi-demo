@@ -23,8 +23,11 @@
       </div>
     </div>
 
+    <!-- 只有在「传了 markers 却一个坐标都没有」时才提示。
+         规划工作台/量测页把地图当画布用（不传 markers），此时这句提示纯属噪音，
+         还会跟页面自己的浮层叠在一起。 -->
     <div
-      v-if="!hasAnyPoint"
+      v-if="showEmptyHint"
       class="map-chip"
       style="left: 10px; right: auto; top: 10px; cursor: default"
     >
@@ -82,6 +85,9 @@ const BASEMAPS = [
     crs: 'wgs84',
     url: 'https://api.jl1mall.com/getMap/{z}/{x}/{-y}?mk=3ddec00f5f435270285ffc7ad1a60ce5&tk=50d6270999cf817cebc636fb8a259ceb',
   },
+  // 天地图已下线：WMTS 需用户自备 tk，配额与可用性都不可控，
+  // 与其留三个点了也加载不出来的选项，不如只保留开箱即用的源。
+  // 「谷歌地球」一类境外源：国内网络不可达且存在测绘合规问题，不接入。
 ];
 
 const props = defineProps({
@@ -98,7 +104,12 @@ const props = defineProps({
   showToolbar: { type: Boolean, default: true },
 });
 
-const emit = defineEmits(['marker-click', 'ready']);
+/**
+ * ready     地图实例（外部可在其上挂自己的图层与交互）
+ * basemap   底图切换事件 { key, crs }：手绘场景必须知道当前底图坐标系，
+ *           否则把 GCJ-02 的点击坐标当 WGS84 写进航线文件会带来数百米偏移
+ */
+const emit = defineEmits(['marker-click', 'ready', 'basemap']);
 
 const mapEl = ref(null);
 const curKey = ref(props.basemap);
@@ -111,6 +122,11 @@ let circleLayer = null;
 let ro = null;
 
 const hasAnyPoint = computed(() => props.markers.some((m) => m.lat && m.lng));
+/**
+ * 只在「传了 markers 却一个坐标都没有」时提示。
+ * 规划工作台 / 量测页把地图当画布用（不传 markers），这时这句提示会跟页面浮层叠在一起。
+ */
+const showEmptyHint = computed(() => props.markers.length > 0 && !hasAnyPoint.value);
 
 function currentBase() {
   return BASEMAPS.find((b) => b.key === curKey.value) || BASEMAPS[0];
@@ -266,6 +282,7 @@ function switchBase(b) {
   }).addTo(map);
   baseLayer.bringToBack();
   drawLayers();
+  emit('basemap', { key: b.key, crs: b.crs });
 }
 
 function resize() {
@@ -284,7 +301,6 @@ onMounted(async () => {
   });
   markerLayer = L.layerGroup().addTo(map);
   lineLayer = L.layerGroup().addTo(map);
-  circleLayer = L.layerGroup().addTo(map);
   circleLayer = L.layerGroup().addTo(map);
   switchBase(b);
 

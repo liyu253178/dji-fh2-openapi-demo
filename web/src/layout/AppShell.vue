@@ -147,9 +147,24 @@ const store = useSessionStore();
 const nav = [
   { path: '/dashboard', title: '首页大屏', icon: 'Monitor', badge: 'online' },
   { path: '/cockpit', title: '虚拟座舱', icon: 'Coordinate' },
-  { path: '/wayline', title: '航线管理', icon: 'MapLocation' },
+  {
+    title: '航线规划',
+    icon: 'MapLocation',
+    children: [
+      { path: '/wayline/plan', title: '规划工作台', icon: 'EditPen' },
+      { path: '/wayline', title: '航线库', icon: 'MapLocation' },
+      { path: '/wayline/tasks', title: '执行记录', icon: 'Timer' },
+    ],
+  },
   { path: '/devices', title: '设备管理', icon: 'Box' },
-  { path: '/models', title: '模型库', icon: 'Collection' },
+  {
+    title: '三维模型',
+    icon: 'Collection',
+    children: [
+      { path: '/models', title: '模型库', icon: 'Collection' },
+      { path: '/models/geo', title: '三维浏览与量测', icon: 'View' },
+    ],
+  },
   {
     title: '工单管理',
     icon: 'Tickets',

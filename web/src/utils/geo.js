@@ -39,6 +39,28 @@ export function wgs84ToGcj02(lng, lat) {
   return [lng + dLng, lat + dLat];
 }
 
+/**
+ * GCJ02 → WGS84（火星坐标还原）
+ * 手绘测区必须走这一步：底图（高德）是 GCJ-02，而航线文件（WPML）要求 WGS84，
+ * 直接把点击得到的坐标写进 KMZ 会带来约 300–600 m 的系统偏移。
+ *
+ * 官方变换没有解析逆，用「正向迭代反解」：先按差值粗减，再迭代收敛到 1e-9 度以内。
+ */
+export function gcj02ToWgs84(lng, lat) {
+  if (outOfChina(lat, lng)) return [lng, lat];
+  let wgsLng = Number(lng);
+  let wgsLat = Number(lat);
+  for (let i = 0; i < 8; i++) {
+    const [tmpLng, tmpLat] = wgs84ToGcj02(wgsLng, wgsLat);
+    const dLng = tmpLng - Number(lng);
+    const dLat = tmpLat - Number(lat);
+    if (Math.abs(dLng) < 1e-9 && Math.abs(dLat) < 1e-9) break;
+    wgsLng -= dLng;
+    wgsLat -= dLat;
+  }
+  return [wgsLng, wgsLat];
+}
+
 /** 按底图坐标系纠偏，返回 [lat, lng] 供 Leaflet 使用 */
 export function toMapLatLng(lat, lng, crs = 'gcj02') {
   if (lat === undefined || lng === undefined || lat === null || lng === null) return null;

@@ -17,10 +17,14 @@ const routes = [
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { title: '首页大屏', subtitle: '巡检指挥中心', icon: 'Monitor', full: true } },
   { path: '/cockpit', name: 'cockpit', component: () => import('../views/CockpitView.vue'), meta: { title: '虚拟座舱', subtitle: '实时飞行控制', icon: 'Coordinate', full: true } },
-  { path: '/wayline', name: 'wayline', component: () => import('../views/WaylineView.vue'), meta: { title: '航线管理', subtitle: '航线库与规划', icon: 'MapLocation' } },
+  // 「航线管理」升级为一级栏目「航线规划」：司空 2 不开放航线规划，规划能力由平台自建
+  { path: '/wayline/plan', name: 'wayline-plan', component: () => import('../views/wayline/PlanView.vue'), meta: { title: '规划工作台', subtitle: '绘制测区 · 生成航线', icon: 'EditPen' } },
+  { path: '/wayline', name: 'wayline', component: () => import('../views/WaylineView.vue'), meta: { title: '航线库', subtitle: '机型匹配与上传', icon: 'MapLocation' } },
+  { path: '/wayline/tasks', name: 'wayline-tasks', component: () => import('../views/wayline/TaskListView.vue'), meta: { title: '执行记录', subtitle: '下发历史与状态', icon: 'Timer' } },
   // 「设备管理」原占用 /assets，一期「巡检成果」需要 /assets，故迁至 /devices
   { path: '/devices', name: 'devices', component: () => import('../views/DeviceView.vue'), meta: { title: '设备管理', subtitle: '机场与飞行器', icon: 'Box' } },
   { path: '/models', name: 'models', component: () => import('../views/ModelLibraryView.vue'), meta: { title: '模型库', subtitle: '项目模型预览', icon: 'Collection' } },
+  { path: '/models/geo', name: 'model-geo', component: () => import('../views/ModelGeoView.vue'), meta: { title: '三维模型', subtitle: '多源影像 · 量测 · 2D/3D', icon: 'View' } },
 
   // ---------- 一期新增 ----------
   { path: '/assets', name: 'assets', component: () => import('../views/AssetLibraryView.vue'), meta: { title: '巡检成果', subtitle: '航拍影像与架次', icon: 'FolderOpened' } },

@@ -70,6 +70,20 @@ export const liveApi = {
 export const waylineApi = {
   list: (params) => http.get('/wayline', { params }),
   detail: (id) => http.get(`/wayline/${encodeURIComponent(id)}`),
+  /** 航线库 + 机型可飞性标注（36 条里哪几条能飞） */
+  libraryMatch: (params) => http.get('/wayline/library-match', { params }),
+  /** 本机队机型（闸 1 的数据来源） */
+  aircraft: (force) => http.get('/wayline/aircraft', { params: force ? { force: '1' } : {} }),
+  /** 规划预览：只算不存 */
+  plan: (body) => http.post('/wayline/plan', body),
+  /** 生成并提交司空 2 验证 */
+  generate: (body) => http.post('/wayline/generate', body, { timeout: 120000 }),
+  /** 本地自研航线草稿 */
+  local: (status) => http.get('/wayline/local', { params: status ? { status } : {} }),
+  /** 重新回查验证 */
+  verify: (id) => http.post(`/wayline/local/${id}/verify`, {}, { timeout: 60000 }),
+  /** 闸 3：下发前机型再校验 */
+  dispatchCheck: (modelKey, waylineId) => http.post('/wayline/dispatch-check', { modelKey, waylineId }),
   upload: (file, name) => {
     const fd = new FormData();
     fd.append('file', file);
