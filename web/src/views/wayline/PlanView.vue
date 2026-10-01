@@ -25,17 +25,14 @@
         </div>
       </div>
 
-      <!-- 绘图工具条：左下角，与右上角底图切换互不遮挡 -->
+      <!-- 绘图工具条：左下角，与右上角底图切换互不遮挡；绘制按钮随航线类型切换 -->
       <div class="map-tools">
-        <span class="chip" :class="{ on: drawing === 'polygon' }" @click="toggleDraw('polygon')">
-          {{ drawing === 'polygon' ? '● 点击加点' : '绘制测区' }}
-        </span>
         <span
           class="chip"
-          :class="{ on: drawing === 'centerline' }"
-          @click="toggleDraw('centerline')"
+          :class="{ on: !!drawing }"
+          @click="toggleDraw(corridor ? 'centerline' : 'polygon')"
         >
-          {{ drawing === 'centerline' ? '● 点击加点' : '绘制中心线' }}
+          {{ drawing ? '● 点击加点' : corridor ? '绘制中心线' : '绘制测区' }}
         </span>
         <span class="chip" :class="{ off: !wgsPoints.length }" @click="undoPoint">撤销一点</span>
         <span class="chip" @click="clearShape">清除</span>
@@ -58,12 +55,11 @@
         <div class="row">
           <label>航线类型</label>
           <el-radio-group v-model="form.templateType" size="small" @change="onTypeChange">
-            <el-radio-button value="mapping2d">正射</el-radio-button>
-            <el-radio-button value="doubleGrid">井字</el-radio-button>
-            <el-radio-button value="corridor">带状</el-radio-button>
+            <el-radio-button value="mapping2d">正射航线</el-radio-button>
+            <el-radio-button value="doubleGrid">倾斜航线</el-radio-button>
+            <el-radio-button value="corridor">带状航线</el-radio-button>
           </el-radio-group>
         </div>
-        <div class="tip">{{ typeTip }}</div>
       </div>
 
       <el-collapse v-model="panels">
@@ -239,7 +235,8 @@ const form = reactive({
   name: '',
 });
 
-const panels = ref(['type', 'param', 'result']);const models = ref([]);
+const panels = ref(['type', 'param', 'result']);
+const models = ref([]);
 const airLoading = ref(false);
 const planning = ref(false);
 const generating = ref(false);
@@ -373,17 +370,22 @@ function renderShape() {
   const pts = wgsPoints.value;
   const ll = pts.map(toLL).filter(Boolean);
   if (!ll.length) return;
-  if (corridor.value || !closed.value) {
+  if (corridor.value) {
+    // 带状：中心线始终画折线
     if (ll.length >= 2) {
       L.polyline(ll, { color: '#22d3ee', weight: 2, dashArray: '6,5' }).addTo(shapeLayer);
     }
   } else if (ll.length >= 3) {
+    // 面自动成型：第 3 个点落下就是面（三角形），第 4 点变四边形，
+    // 继续加点继续扩展——不需要先「双击闭合」才可见
     L.polygon(ll, {
       color: '#22d3ee',
       weight: 2,
       fillColor: '#22d3ee',
       fillOpacity: 0.12,
     }).addTo(shapeLayer);
+  } else if (ll.length === 2) {
+    L.polyline(ll, { color: '#22d3ee', weight: 2, dashArray: '6,5' }).addTo(shapeLayer);
   }
 }
 
@@ -396,8 +398,6 @@ function renderShape() {
 function renderHandles() {
   if (!handleLayer) return;
   handleLayer.clearLayers();
-  // 正在绘制时不画手柄，否则会跟「点击加点」抢事件
-  if (drawing.value) return;
   const pts = wgsPoints.value;
   const n = pts.length;
   const min = corridor.value ? 2 : 3;
@@ -585,21 +585,19 @@ async function loadAircraft() {
   if (!form.aircraftKey && models.value.length) form.aircraftKey = models.value[0].key;
 }
 
-const typeTip = computed(
-  () =>
-    ({
-      mapping2d: '正射：固定角度往返扫描，适合地块测绘。',
-      doubleGrid: '井字：正射飞两遍，第二遍旋转 90°，重叠更充分，适合三维建模。',
-      corridor: '带状：先画中心线，再设左右外扩；扫线垂直于中心线，沿走廊边缘连接成工字形，适合河道、道路、管线走廊。',
-    }[form.templateType] || '')
-);
-
+/**
+ * 切换航线类型：图形保留，直接按当前图形重算。
+ * 正射 ↔ 倾斜共用同一个面；带状把已有顶点当中心线用——
+ * 客户不需要为换一种航线重新画一遍范围。
+ */
 function onTypeChange() {
-  wgsPoints.value = [];
-  closed.value = false;
-  drawing.value = corridor.value ? 'centerline' : null;
+  if (drawing.value) drawing.value = null;
+  closed.value = !corridor.value && wgsPoints.value.length >= 3;
+  // 带状但还没有可用顶点：自动进入中心线绘制，省一次点击
+  if (corridor.value && wgsPoints.value.length < 2) drawing.value = 'centerline';
   preview.value = null;
   renderAll();
+  doPlan(true); // 静默：图形不够（如中心线只有 1 点）就不弹提示
 }
 
 /* ---------------- 预览 / 生成 ---------------- */
@@ -628,7 +626,7 @@ function buildPayload() {
 function validateShape() {
   const n = wgsPoints.value.length;
   if (corridor.value && n < 2) return '请先在地图上绘制中心线（至少 2 个点，双击结束）';
-  if (!corridor.value && (n < 3 || !closed.value)) return '请绘制闭合测区（至少 3 个点，双击结束）';
+  if (!corridor.value && n < 3) return '请绘制测区（至少 3 个点即成面，可继续加点扩大范围）';
   if (!form.aircraftKey) return '请选择目标机型';
   if (!form.lens?.length) return '请至少选择一个镜头';
   return '';

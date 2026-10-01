@@ -65,8 +65,8 @@ router.post('/local/:id/verify', async (req, res) => {
 /** 规划预览：只算不存，用于地图上画航带 */
 router.post('/plan', async (req, res) => {
   try {
-    const { polygon, aircraftKey, params } = req.body || {};
-    const r = await plan({ polygon, aircraftKey, params: params || {} });
+    const { polygon, centerline, aircraftKey, params } = req.body || {};
+    const r = await plan({ polygon, centerline, aircraftKey, params: params || {} });
     res.json(r.ok ? { ok: true, data: r } : r);
   } catch (e) {
     log.error('航线规划', `预览异常：${e.message}`);
@@ -81,10 +81,10 @@ router.post('/plan', async (req, res) => {
  */
 router.post('/generate', async (req, res) => {
   try {
-    const { name, polygon, aircraftKey, params = {}, submit = true } = req.body || {};
+    const { name, polygon, centerline, aircraftKey, params = {}, submit = true } = req.body || {};
     if (!name) return res.json({ ok: false, message: '请填写航线名称' });
 
-    const built = await build({ polygon, aircraftKey, params, name });
+    const built = await build({ polygon, centerline, aircraftKey, params, name });
     if (!built.ok) return res.json(built);
 
     const preview = built.preview;
@@ -93,7 +93,7 @@ router.post('/generate', async (req, res) => {
       aircraftKey,
       aircraftName: preview.aircraft.name,
       payload: preview.aircraft.payload,
-      templateType: 'mapping2d',
+      templateType: params.templateType || 'mapping2d',
       polygon,
       params,
       stats: { ...preview.plan.stats, measure: preview.measure, spacingSource: preview.spacingSource },
