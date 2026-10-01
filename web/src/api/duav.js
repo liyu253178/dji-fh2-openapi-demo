@@ -41,7 +41,11 @@ async function request(path, { method = 'GET', query, body, timeout = 20000, raw
     const ok = Number(json.code) === 0 && res.ok;
     return { ok, code: Number(json.code ?? -1), message: json.message || '', data: json.data ?? null, status: res.status };
   } catch (e) {
-    const msg = e.name === 'AbortError' ? `请求超时（${timeout}ms）` : e.message;
+    let msg = e.name === 'AbortError' ? `请求超时（${timeout}ms）` : e.message;
+    // fetch 的 Failed to fetch = 连接层失败（后端未启动 / 正在重启），给出可行动的指引
+    if (/Failed to fetch/i.test(String(e.message || ''))) {
+      msg = '无法连接后端服务（可能正在重启或未启动），请稍候刷新页面重试';
+    }
     return { ok: false, code: -2, message: msg, data: null };
   } finally {
     clearTimeout(timer);

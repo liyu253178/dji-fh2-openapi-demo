@@ -103,7 +103,7 @@
         <div class="sidebar-foot">
           <span class="dot" :style="{ background: store.connected ? 'var(--c-ok)' : 'var(--c-err)' }"></span>
           <span>{{ store.connected ? '系统运行正常' : '云端未连接' }}</span>
-          <span class="ver">v2.6</span>
+          <span class="ver">v2.7</span>
         </div>
       </aside>
 
