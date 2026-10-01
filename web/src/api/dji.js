@@ -9,7 +9,12 @@ const http = axios.create({ baseURL: '/api', timeout: 60000 });
 http.interceptors.response.use(
   (res) => res.data,
   (err) => {
-    const msg = err?.response?.data?.message || err.message || '网络异常';
+    let msg = err?.response?.data?.message || err.message || '网络异常';
+    // axios 的 "Network Error" 是连接层失败（后端未启动 / 正在重启 / 代理断开），
+    // 对用户来说等于「服务不在线」，要给出可行动的指引而不是天书
+    if (err?.code === 'ERR_NETWORK' || /Network Error/i.test(String(err?.message || ''))) {
+      msg = '无法连接后端服务（可能正在重启或未启动），请稍候刷新页面重试';
+    }
     return Promise.resolve({ ok: false, message: msg, data: null });
   }
 );
