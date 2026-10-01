@@ -15,6 +15,9 @@
 
 const DEG = Math.PI / 180;
 
+/** 航点串接与架次切分（井字形路径的连接策略） */
+import { sequenceGroups, splitSorties, centroidXY } from './pathSequence.js';
+
 /**
  * 局部切平面（ENU，米）投影：以给定中心为原点
  * 纬度用 WGS84 级数展开，比固定 111320 精确一个量级
@@ -122,69 +125,95 @@ function clipHorizontal(st, tc) {
   return segs;
 }
 
-/**
- * 面状测区展开为往返航带
- *
- * @param {object} opts
- * @param {[number,number][]} opts.polygon   测区顶点 [[lon,lat],...]（WGS84），顺时针/逆时针均可
- * @param {number} opts.direction            主航线角（度，从北顺时针）
- * @param {number} opts.spacing              航线间距（米，航带之间）
- * @param {number} opts.wpSpacing            航点间距（米，同一航带内）
- * @param {number} [opts.margin]             外扩距离（米），让航带两端超出测区边界
- * @param {number} [opts.maxWaypoints]       航点上限，超过则按更大间距重算
- * @returns {object} { strips, waypoints, stats }
- */
-export function planArea(opts) {
-  const { polygon, direction = 0 } = opts;
-  let spacing = Math.max(1, Number(opts.spacing) || 30);
-  let wpSpacing = Math.max(1, Number(opts.wpSpacing) || 40);
-  const margin = Math.max(0, Number(opts.margin) || 0);
-  const maxWaypoints = Number(opts.maxWaypoints) || 1500;
-
-  if (!Array.isArray(polygon) || polygon.length < 3) {
-    throw new Error('测区至少需要 3 个顶点');
+/** Andrew monotone chain 凸包（XY 米），用于凹多边形的工程折中方案 */
+export function convexHullXY(xy) {
+  if (xy.length < 4) return xy.slice();
+  const pts = xy.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
   }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
 
-  const bb0 = {
-    minLon: Math.min(...polygon.map((p) => p[0])),
-    maxLon: Math.max(...polygon.map((p) => p[0])),
-    minLat: Math.min(...polygon.map((p) => p[1])),
-    maxLat: Math.max(...polygon.map((p) => p[1])),
-  };
-  const center = [(bb0.minLon + bb0.maxLon) / 2, (bb0.minLat + bb0.maxLat) / 2];
-  const frame = makeLocalFrame(center[0], center[1]);
-  const xy = polygon.map(frame.toXY);
-  const areaM2 = areaXY(xy);
-  const st = toRouteFrame(xy, direction);
+/** 凹凸性判定：存在符号不一致的顶点叉积即为凹多边形 */
+export function polygonConcavityXY(xy) {
+  let pos = 0;
+  let neg = 0;
+  const n = xy.length;
+  for (let i = 0; i < n; i++) {
+    const o = xy[i];
+    const a = xy[(i + 1) % n];
+    const b = xy[(i + 2) % n];
+    const c = (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    if (c > 1e-9) pos++;
+    else if (c < -1e-9) neg++;
+  }
+  return { concave: pos > 0 && neg > 0, vertices: n };
+}
 
+/**
+ * 面状测区的核心展开（作用在 XY 米上，便于多趟航线复用同一套几何）
+ *
+ * 算法结构同「扫描线填充」：把多边形旋到航线坐标系（s 沿航线、t 垂直航线），
+ * 以航线间距为步长逐行扫描得到每条扫描线与多边形边界的交点，
+ * 再用「子段中点是否在多边形内」剔掉凹多边形碗口处的无效线段。
+ */
+function planAreaCore({ xy, direction, spacing0, wpSpacing0, margin, maxWaypoints, useHull }) {
+  let spacing = Math.max(1, Number(spacing0) || 30);
+  let wpSpacing = Math.max(1, Number(wpSpacing0) || 40);
+  const concavity = polygonConcavityXY(xy);
+  // 凹多边形：默认仍按原多边形精确裁剪（保守、不漏拍）；
+  // 只有当调用方明确要求用凸包（通常与后期覆盖检查配套）时才切换。
+  const scanPoly = useHull && concavity.concave ? convexHullXY(xy) : xy;
+  const st = toRouteFrame(scanPoly, direction);
   const ts = st.map((p) => p.t);
   const tMin = Math.min(...ts) - margin;
   const tMax = Math.max(...ts) + margin;
   const width = tMax - tMin;
 
-  /** 按给定间距生成一次（提取成闭包，点数超限时换间距重跑） */
+  let dropped = 0;
   const generate = (sp, wps) => {
     const n = Math.max(1, Math.ceil(width / sp));
     const strips = [];
+    dropped = 0;
     for (let i = 0; i < n; i++) {
-      // 居中布带：避免首尾两带贴边导致的半带空飞
       const tc = tMin + ((i + 0.5) * width) / n;
       const segs = clipHorizontal(st, tc);
-      if (!segs.length) continue;
+      if (!segs.length) {
+        dropped++;
+        continue;
+      }
       const pts = [];
       for (const [s1, s2] of segs) {
         const a = s1 - margin;
         const b = s2 + margin;
         const len = b - a;
-        if (len <= 0.5) continue;
+        if (len <= 0.5) {
+          dropped++;
+          continue;
+        }
         const cnt = Math.max(2, Math.ceil(len / wps) + 1);
         for (let k = 0; k < cnt; k++) {
           const s = a + (len * k) / (cnt - 1);
           pts.push(fromRouteFrame(s, tc, direction));
         }
       }
-      if (!pts.length) continue;
-      // 往返（弓字）：奇数带整体反向，使相邻航带首尾相接，减少空飞
+      if (!pts.length) {
+        dropped++;
+        continue;
+      }
+      // 往返（之字）：奇数带整体反向，相邻航带首尾相接
       if (strips.length % 2 === 1) pts.reverse();
       strips.push(pts);
     }
@@ -194,39 +223,230 @@ export function planArea(opts) {
   let strips = generate(spacing, wpSpacing);
   let adjusted = false;
   let total = strips.reduce((acc, s) => acc + s.length, 0);
-  // 超限按更大间距重算（如实上报，不静默改参数）
   let guard = 0;
   while (total > maxWaypoints && guard++ < 12) {
-    spacing = spacing * 1.25;
-    wpSpacing = wpSpacing * 1.25;
+    spacing *= 1.25;
+    wpSpacing *= 1.25;
     strips = generate(spacing, wpSpacing);
     total = strips.reduce((acc, s) => acc + s.length, 0);
     adjusted = true;
   }
+  return {
+    strips,
+    spacing: Math.round(spacing * 10) / 10,
+    wpSpacing: Math.round(wpSpacing * 10) / 10,
+    adjusted,
+    dropped,
+    concave: concavity.concave,
+    usedHull: useHull && concavity.concave,
+  };
+}
+
+/** 由测区经纬度建立局部平面坐标系 */
+function frameOf(polygon) {
+  const bb0 = {
+    minLon: Math.min(...polygon.map((p) => p[0])),
+    maxLon: Math.max(...polygon.map((p) => p[0])),
+    minLat: Math.min(...polygon.map((p) => p[1])),
+    maxLat: Math.max(...polygon.map((p) => p[1])),
+  };
+  const center = [(bb0.minLon + bb0.maxLon) / 2, (bb0.minLat + bb0.maxLat) / 2];
+  const frame = makeLocalFrame(center[0], center[1]);
+  return { frame, xy: polygon.map(frame.toXY) };
+}
+
+/**
+ * 一趟扫描线填充的完整结果（XY 米）
+ * @returns {{strips, frame, areaM2, spacing, wpSpacing, adjusted, dropped, concave, usedHull, centroidXY}}
+ */
+export function planAreaXY({
+  polygon,
+  direction = 0,
+  spacing,
+  wpSpacing,
+  margin = 0,
+  maxWaypoints = 1500,
+  useHull = false,
+}) {
+  if (!Array.isArray(polygon) || polygon.length < 3) throw new Error('测区至少需要 3 个顶点');
+  const { frame, xy } = frameOf(polygon);
+  const core = planAreaCore({ xy, direction, spacing0: spacing, wpSpacing0: wpSpacing, margin, maxWaypoints, useHull });
+  return {
+    strips: core.strips,
+    frame,
+    areaM2: Math.round(areaXY(xy)),
+    centroidXY: centroidXY(xy),
+    spacing: core.spacing,
+    wpSpacing: core.wpSpacing,
+    adjusted: core.adjusted,
+    dropped: core.dropped,
+    concave: core.concave,
+    usedHull: core.usedHull,
+  };
+}
+
+/** XY 序列 → 经纬度航点 */
+const toWaypoints = (frame, pts) => pts.map(([x, y]) => frame.toLL([x, y])).map(([lon, lat]) => ({ lon, lat }));
+
+/**
+ * 面状测区展开为往返航带（正射单遍）
+ */
+export function planArea(opts) {
+  const { polygon, direction = 0 } = opts;
+  const margin = Math.max(0, Number(opts.margin) || 0);
+  const r = planAreaXY({
+    polygon,
+    direction,
+    spacing: opts.spacing,
+    wpSpacing: opts.wpSpacing,
+    margin,
+    maxWaypoints: Number(opts.maxWaypoints) || 1500,
+    useHull: !!opts.useHull,
+  });
 
   const waypoints = [];
   let lengthM = 0;
   let prev = null;
-  for (const strip of strips) {
+  for (const strip of r.strips) {
     for (const p of strip) {
       if (prev) lengthM += distXY(prev, p);
       prev = p;
-      waypoints.push(frame.toLL(p));
+      waypoints.push(r.frame.toLL(p));
     }
   }
 
   return {
-    strips: strips.map((s) => s.map(frame.toLL)),
+    strips: r.strips.map((s) => s.map(r.frame.toLL)),
     waypoints: waypoints.map(([lon, lat]) => ({ lon, lat })),
     stats: {
-      areaM2: Math.round(areaM2),
-      stripCount: strips.length,
+      areaM2: r.areaM2,
+      stripCount: r.strips.length,
       waypointCount: waypoints.length,
       lengthM: Math.round(lengthM),
-      spacing: Math.round(spacing * 10) / 10,
-      wpSpacing: Math.round(wpSpacing * 10) / 10,
+      spacing: r.spacing,
+      wpSpacing: r.wpSpacing,
+      adjusted: r.adjusted,
+      dropped: r.dropped,
+      concave: r.concave,
+      usedHull: r.usedHull,
+      maxWaypoints: Number(opts.maxWaypoints) || 1500,
+    },
+  };
+}
+
+/**
+ * 井字形（双遍正交）航线
+ *
+ * 与「正射单遍」的三点区别：
+ *  1. 第二组航线的**航线角旋转 90°**，重新走一遍扫描线填充；
+ *  2. 两组间距**各自独立解算**（倾斜摄影时两个方向的覆盖不同，见 cameraGeometry.passGeometry）——
+ *     当倾角较大时第二组间距会明显小于/大于第一组，这时若沿用同一个间距必然有一个方向重叠率不达标；
+ *  3. 两组之间按「离上一组终点最近的那一端」接入，避免组间长距离空飞；
+ *     组内仍是之字形往复，并在路径过长时切成多个架次。
+ *
+ * @returns {{strips, waypoints, flightPath, groups, sorties, stats}}
+ */
+export function planDoubleGrid({
+  polygon,
+  direction = 0,
+  spacing,
+  wpSpacing,
+  spacing2,
+  wpSpacing2,
+  margin = 0,
+  maxWaypoints = 1500,
+  maxSortieLengthM = 0,
+  homeXY = null,
+  useHull = false,
+}) {
+  const budget = Math.max(50, Math.floor((Number(maxWaypoints) || 1500) / 2));
+  let sp1 = Number(spacing) || 30;
+  let wp1 = Number(wpSpacing) || 40;
+  let sp2 = Number(spacing2) || sp1;
+  let wp2 = Number(wpSpacing2) || wp1;
+
+  const build = () => {
+    const a = planAreaXY({ polygon, direction, spacing: sp1, wpSpacing: wp1, margin, maxWaypoints: budget, useHull });
+    const b = planAreaXY({
+      polygon,
+      direction: (Number(direction) || 0) + 90,
+      spacing: sp2,
+      wpSpacing: wp2,
+      margin,
+      maxWaypoints: budget,
+      useHull,
+    });
+    return { a, b, total: a.strips.reduce((s, x) => s + x.length, 0) + b.strips.reduce((s, x) => s + x.length, 0) };
+  };
+
+  let r = build();
+  let adjusted = false;
+  let guard = 0;
+  while (r.total > (Number(maxWaypoints) || 1500) && guard++ < 12) {
+    sp1 *= 1.25;
+    wp1 *= 1.25;
+    sp2 *= 1.25;
+    wp2 *= 1.25;
+    r = build();
+    adjusted = true;
+  }
+  adjusted = adjusted || r.a.adjusted || r.b.adjusted;
+
+  const { frame } = r.a;
+  const seq = sequenceGroups(
+    [
+      { name: '主航向', strips: r.a.strips },
+      { name: '正交航向', strips: r.b.strips },
+    ],
+    { homeXY }
+  );
+
+  let lengthM = 0;
+  for (let i = 1; i < seq.points.length; i++) lengthM += distXY(seq.points[i - 1], seq.points[i]);
+
+  const sorties = maxSortieLengthM > 0 ? splitSorties(seq.points, { maxLengthM: maxSortieLengthM, homeXY }) : [];
+
+  const groupStats = (g, name, dir) => ({
+    name,
+    direction: dir % 360,
+    stripCount: g.strips.length,
+    waypointCount: g.strips.reduce((s, x) => s + x.length, 0),
+    spacing: g.spacing,
+    wpSpacing: g.wpSpacing,
+    adjusted: g.adjusted,
+    strips: g.strips.map((s) => s.map(frame.toLL)),
+  });
+
+  return {
+    strips: [...r.a.strips, ...r.b.strips].map((s) => s.map(frame.toLL)),
+    waypoints: toWaypoints(frame, seq.points),
+    /** 串接后的完整飞行路径，按此顺序下发 */
+    flightPath: seq.points.map(frame.toLL),
+    groups: [groupStats(r.a, '主航向', Number(direction) || 0), groupStats(r.b, '正交航向', (Number(direction) || 0) + 90)],
+    sorties: sorties.map((s) => ({
+      index: s.index,
+      waypointCount: s.waypointCount,
+      lengthM: s.lengthM,
+      waypoints: toWaypoints(frame, s.points),
+    })),
+    stats: {
+      areaM2: r.a.areaM2,
+      stripCount: r.a.strips.length + r.b.strips.length,
+      waypointCount: seq.points.length,
+      lengthM: Math.round(lengthM),
+      spacing: r.a.spacing,
+      spacing2: r.b.spacing,
+      wpSpacing: r.a.wpSpacing,
+      wpSpacing2: r.b.wpSpacing,
       adjusted,
-      maxWaypoints,
+      dropped: r.a.dropped + r.b.dropped,
+      concave: r.a.concave || r.b.concave,
+      usedHull: r.a.usedHull || r.b.usedHull,
+      /** 组间转移距离：越小说明接入端选得越好 */
+      transitionsM: seq.transitionsM,
+      links: seq.links,
+      sortieCount: sorties.length,
+      maxWaypoints: Number(maxWaypoints) || 1500,
     },
   };
 }

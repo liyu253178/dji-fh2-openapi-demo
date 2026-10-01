@@ -135,6 +135,8 @@ const switched = await p.evaluate(() => ({
 const m2 = switched.text.match(/已选 (\d+) 点/);
 ok('切换正射后顶点保留', !!m2 && Number(m2[1]) >= 2, m2 ? m2[1] + ' 点' : '未匹配');
 ok('顶点手柄仍在（面可继续拖拽）', switched.handles > 0, `${switched.handles} 个`);
+ok('作业参数含「地面分辨率」（GSD 驱动航高）', switched.text.includes('地面分辨率'));
+ok('作业参数含「云台俯仰」（倾斜摄影）', switched.text.includes('云台俯仰'));
 
 await p.screenshot({ path: shot, fullPage: false });
 console.log(`\n  截图：${shot}`);
