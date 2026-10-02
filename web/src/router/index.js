@@ -26,7 +26,7 @@ const routes = [
   // 「设备管理」原占用 /assets，一期「巡检成果」需要 /assets，故迁至 /devices
   { path: '/devices', name: 'devices', component: () => import('../views/DeviceView.vue'), meta: { title: '设备管理', subtitle: '机场与飞行器', icon: 'Box' } },
   { path: '/models', name: 'models', component: () => import('../views/ModelLibraryView.vue'), meta: { title: '模型库', subtitle: '项目模型预览', icon: 'Collection' } },
-  // Cesium 三维底座 POC（阶段 0）：独立路由、随时可删，用于打坐标/性能/量测/离线四个硬指标。
+  // 模型分析（原「三维底座 POC」，阶段 0 四项硬指标验收通过后转正为功能页）。
   // 路由级懒加载，Cesium chunk 不进任何业务页首屏。
   // 注：原 three.js 版「三维浏览与量测」（/models/geo，ModelGeoView）已按产品决策下线删除，
   //     需要找回时看 git 历史（提交「Cesium POC」之前的版本）。
@@ -34,7 +34,7 @@ const routes = [
     path: '/models/geo-cesium',
     name: 'model-geo-cesium',
     component: () => import('../views/model/CesiumPocView.vue'),
-    meta: { title: '三维底座 POC', subtitle: 'Cesium 独立验证', icon: 'DataLine' },
+    meta: { title: '模型分析', subtitle: '三维模型查看与分析', icon: 'DataLine' },
   },
 
   // ---------- 一期新增 ----------

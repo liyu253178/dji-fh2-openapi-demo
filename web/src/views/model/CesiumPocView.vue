@@ -11,7 +11,7 @@
           :loading="modelsLoading"
         >
           <el-option v-for="m in models" :key="m.id" :label="m.name" :value="m.id">
-            <span>{{ m.name }}<span v-if="!m.nameKnown" class="opt-unknown">（未知名）</span></span>
+            <span>{{ m.name }}<span v-if="isUnknownName(m)" class="opt-unknown">（未知名）</span></span>
             <span class="opt-meta">{{ m.file_type === 'model_3d' ? '3D' : '2D' }} · {{ fmtMB(m.bytes) }}</span>
           </el-option>
         </el-select>
@@ -254,6 +254,9 @@ let rafHooked = false;
 const entities = [];
 
 const fmtMB = (b) => (b ? `${(b / 1048576).toFixed(b > 10485760 ? 0 : 1)} MB` : '—');
+/** 名字回落成了目录 id（司空 2 名字没拉到 / 清单里没存）才提示「未知名」；
+ *  不依赖后端 nameKnown 字段——旧版后端没有该字段，靠名字形态判断两边都兼容 */
+const isUnknownName = (m) => m?.nameKnown === false || /^\d{6,}$/.test(String(m?.name || ''));
 const err = (msg) => {
   errText.value = msg;
   errHint.value = '检查后端是否已启动、模型缓存是否完整，然后点「重新加载」。';
