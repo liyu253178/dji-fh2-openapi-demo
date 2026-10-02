@@ -107,10 +107,11 @@
           </div>
           <div v-if="!corridor" class="param">
             <label>云台俯仰（°）</label>
-            <el-input-number v-model="form.gimbalPitch" :min="-90" :max="-10" :step="5" size="small" controls-position="right" />
+            <el-input-number v-model="form.gimbalPitch" :min="-90" :max="-10" :step="5" size="small" controls-position="right" @change="onPitchChange" />
           </div>
           <div v-if="!corridor" class="sub-tip">
-            −90° 为正射；倾斜摄影建议 −45°～−60°，此时两遍航线的间距会被分别解算
+            −90° 为正射（正射航线默认）；−45° 为标准倾斜摄影，选「倾斜航线」时已自动填入。
+            倾斜时两遍航线的间距会被分别解算
           </div>
           <div class="param">
             <label>航速（m/s）</label>
@@ -277,6 +278,16 @@ function heightFromGsd(gsdCm, lens = activeLens.value) {
 
 /** 防止航高↔GSD 互相触发死循环的锁 */
 let syncing = false;
+
+/**
+ * 各航线类型的默认云台俯仰（度）：−90 为正射，−45 为标准倾斜摄影。
+ * 「倾斜航线」这个模板本来就是用来拍倾斜的，所以切过去时直接给 −45，
+ * 省得每次都要手动从 −90 调一遍；切回正射则退回 −90。
+ * 用户一旦手动调过角度，就再也不自动改，避免覆盖他自己选的值。
+ */
+const DEFAULT_GIMBAL_PITCH = { mapping2d: -90, doubleGrid: -45, corridor: -90 };
+/** 用户是否手动调过俯仰角 */
+let pitchTouched = false;
 
 const form = reactive({
   templateType: 'mapping2d',
@@ -705,11 +716,21 @@ async function loadAircraft() {
 function onTypeChange() {
   if (drawing.value) drawing.value = null;
   closed.value = !corridor.value && wgsPoints.value.length >= 3;
+  // 按航线类型给默认俯仰角。用户手动调过就不再动，免得覆盖他自己选的值。
+  // 带状不显示该参数，也不往后端传，跳过。
+  if (!pitchTouched && !corridor.value) {
+    form.gimbalPitch = DEFAULT_GIMBAL_PITCH[form.templateType] ?? -90;
+  }
   // 带状但还没有可用顶点：自动进入中心线绘制，省一次点击
   if (corridor.value && wgsPoints.value.length < 2) drawing.value = 'centerline';
   preview.value = null;
   renderAll();
   doPlan(true); // 静默：图形不够（如中心线只有 1 点）就不弹提示
+}
+
+/** 用户手动调过云台俯仰：此后切航线类型不再重置该值 */
+function onPitchChange() {
+  pitchTouched = true;
 }
 
 /* ---------------- 预览 / 生成 ---------------- */
