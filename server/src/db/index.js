@@ -124,10 +124,11 @@ export function health() {
 
 /** 各表行数（运维总览用） */
 export function tableCounts() {
-  const tables = [
-    'project', 'device', 'flight_task', 'asset_image', 'patch', 'patch_image',
-    'issue_type', 'recipient', 'ticket', 'ticket_log', 'email_log', 'mail_queue', 'alert',
-  ];
+  // 直接查 sqlite_master 而不是写死表名清单：此前手写清单漏掉了后加的
+  // schema_version 与 wayline_draft，系统状态页会「凭空少两张表」
+  const tables = all(`SELECT name AS name FROM sqlite_master
+     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+     ORDER BY name`).map((r) => r.name);
   const out = {};
   for (const t of tables) {
     try {

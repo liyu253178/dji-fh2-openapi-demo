@@ -18,7 +18,10 @@
     "test:grid": "node scripts/verify-grid-geometry.mjs",
     "test:mail": "node scripts/test-mail.mjs",
     "test:oblique": "node scripts/verify-oblique.mjs",
-    "test:wayline-int": "node scripts/verify-wayline-integration.mjs"
+    "test:wayline-int": "node scripts/verify-wayline-integration.mjs",
+    "test:guards": "node scripts/verify-http-guards.mjs",
+    "test:path-safety": "node scripts/verify-path-safety.mjs",
+    "test:security": "node scripts/verify-security.mjs"
   },
   "dependencies": {
     "ali-oss": "^6.21.0",

@@ -38,6 +38,62 @@ const MAX_ZIP_BYTES = 2 * 1024 * 1024 * 1024;
 const MIN_FREE_DISK = 4 * 1024 * 1024 * 1024;
 /** 详情短缓存：详情里带签名链接，重复取没有意义 */
 const detailCache = new Map();
+
+// ===================================================================
+// 路径安全（P0-2）
+//
+// 历史实现是 path.join(CACHE_ROOT, id) 拿到 dir，再用 target.startsWith(dir)
+// 做越界校验。这里有个致命顺序错误：dir 本身就由未校验的 id 构造，
+// path.join('/data/models', '../../../../etc') 会规范化成 '/etc'，
+// 于是「以 dir 为基准」的校验恒真 —— 攻击面直通 data/tokens.json（明文 TK）与 .env。
+//
+// 正确顺序必须是：先校验 id → 再由白名单 id 构造目录 → 最后以 CACHE_ROOT 为基准校验。
+// ===================================================================
+
+/** 合法模型 id：纯文件名字符，不含分隔符，无法表达 ../ */
+const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * 校验 id 并返回模型缓存目录的绝对路径；非法返回 null。
+ * 边界基准恒为 CACHE_ROOT，不受 id 影响。
+ */
+export function safeModelDir(id) {
+  if (typeof id !== 'string' || id === '' || !ID_RE.test(id)) return null;
+  const dir = path.resolve(CACHE_ROOT, id);
+  if (!dir.startsWith(CACHE_ROOT + path.sep)) return null;
+  return dir;
+}
+
+/**
+ * 把 (id, 包内相对路径) 解析为一个确定在 CACHE_ROOT 之内的绝对路径；
+ * 越界、id 非法、路径不存在都返回 null。
+ *
+ * 对已存在的目标额外做一次 realpath —— 逻辑路径检查只能挡住 ../，
+ * 挡不住「目录内被放进一个指向外部的符号链接」，必须落到真实路径再判一次。
+ */
+export async function resolveModelFile(id, rel, { allowDir = false } = {}) {
+  const dir = safeModelDir(id);
+  if (!dir || typeof rel !== 'string' || rel === '') return null;
+
+  const target = path.resolve(dir, rel);
+  if (!target.startsWith(dir + path.sep)) return null;
+
+  try {
+    const st = await fsp.stat(target);
+    if (!allowDir && !st.isFile()) return null;
+  } catch {
+    return null;
+  }
+
+  try {
+    const realTarget = await fsp.realpath(target);
+    const realRoot = await fsp.realpath(dir).catch(() => dir);
+    if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) return null;
+    return realTarget;
+  } catch {
+    return null;
+  }
+}
 const DETAIL_TTL = 5 * 60 * 1000;
 
 const fmtMB = (n) => `${(n / 1024 / 1024).toFixed(0)} MB`;
@@ -560,10 +616,26 @@ async function readMapReport(dir, files) {
   return null;
 }
 
+/**
+ * 统一 id 校验（进路由之前收口）。
+ *
+ * id 有两个去处：远端查询（详情/preview/package/check）和本地缓存路径。
+ * 之前每个使用点各管各的，漏一个就出事。这里在 router 层一次性卡住，
+ * 非白名单 id 直接 400，不再让 ../../ 之类的输入流到下游任何一层。
+ */
+router.param('id', (req, res, next, id) => {
+  if (!safeModelDir(id)) {
+    log.warn('模型库', `非法模型 id 被拒: ${String(id).slice(0, 80)}`);
+    return res.status(400).json({ ok: false, message: '非法模型 id' });
+  }
+  next();
+});
+
 /** 模型包下载 + 解压，返回文件清单 */
 router.get('/:id/files', async (req, res) => {
   const id = String(req.params.id);
-  const dir = path.join(CACHE_ROOT, id);
+  const dir = safeModelDir(id);
+  if (!dir) return res.status(400).json({ ok: false, message: '非法模型 id' });
   const manifestPath = path.join(dir, '_manifest.json');
   try {
     if (fs.existsSync(manifestPath)) {
@@ -769,10 +841,11 @@ router.get('/:id/asset', async (req, res) => {
   const id = String(req.params.id);
   const rel = String(req.query?.path || '');
   if (!rel) return res.status(400).json({ ok: false, message: '缺少 path' });
-  const dir = path.join(CACHE_ROOT, id);
-  const target = path.resolve(dir, rel);
-  if (!target.startsWith(dir + path.sep)) return res.status(400).json({ ok: false, message: '非法路径' });
-  if (!fs.existsSync(target)) return res.status(404).json({ ok: false, message: '文件不存在' });
+  const target = await resolveModelFile(id, rel);
+  if (!target) {
+    log.warn('模型库', `资源路径越界或不存在 id=${id} path=${rel}`);
+    return res.status(400).json({ ok: false, message: '非法路径' });
+  }
   const ext = path.extname(target).toLowerCase();
   res.set('Content-Type', MIME[ext] || 'application/octet-stream');
   res.set('Cache-Control', 'private, max-age=3600');
@@ -805,11 +878,11 @@ router.get('/:id/tiles/*', async (req, res) => {
   const raw = String(req.params[0] ?? req.params.splat ?? '');
   if (!raw) return res.status(400).type('text/plain').send('缺少瓦片路径');
 
-  const dir = path.join(CACHE_ROOT, id);
-  let target;
+  // 逐段解码后丢给统一的路径安全层：realpath 在这里兜住 ../ 与符号链接逃逸
+  let rel;
   try {
     // 通配段可能是多段组成，逐段解码，避免文件名里本来就含 % 时被二次解码搞坏
-    const rel = raw
+    rel = raw
       .split('/')
       .filter(Boolean)
       .map((seg) => {
@@ -820,12 +893,13 @@ router.get('/:id/tiles/*', async (req, res) => {
         }
       })
       .join('/');
-    target = path.resolve(dir, rel);
   } catch {
     return res.status(400).type('text/plain').send('非法瓦片路径');
   }
-  if (target !== dir && !target.startsWith(dir + path.sep)) {
-    log.warn('模型库', `瓦片路径越界被拒 id=${id} raw=${raw}`);
+
+  const target = await resolveModelFile(id, rel);
+  if (!target) {
+    log.warn('模型库', `瓦片路径越界或被拒 id=${id} raw=${raw}`);
     return res.status(400).type('text/plain').send('非法瓦片路径');
   }
 
