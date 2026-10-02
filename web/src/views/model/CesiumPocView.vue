@@ -38,6 +38,12 @@
           <el-radio-button value="amap">高德影像（GCJ-02）</el-radio-button>
         </el-radio-group>
 
+        <el-radio-group v-model="quality" size="small" title="切换后需重新加载模型">
+          <el-radio-button value="quality">质量优先</el-radio-button>
+          <el-radio-button value="balanced">平衡</el-radio-button>
+          <el-radio-button value="smooth">流畅优先</el-radio-button>
+        </el-radio-group>
+
         <span class="sep" />
 
         <el-radio-group v-model="tool" size="small" @change="onToolChange">
@@ -95,6 +101,7 @@
         <div class="m-row"><span>平均帧率</span><b>{{ metrics.fps === null ? '—' : metrics.fps.toFixed(1) + ' fps' }}{{ metrics.frames ? ` (${metrics.frames} 帧)` : '' }}</b></div>
         <div class="m-row"><span>已载瓦片</span><b>{{ metrics.tilesLoaded }} / {{ metrics.tilesTotal }}</b></div>
         <div class="m-row"><span>绘制指令</span><b>{{ metrics.commands }}</b></div>
+        <div class="m-row"><span>质量策略</span><b>{{ metrics.qualityPreset || '—' }}</b></div>
         <div class="m-row"><span>瓦片缓存上限</span><b>{{ fmtMB(metrics.cacheBytes) }}</b></div>
         <div class="m-row"><span>Ion 令牌</span><b :class="metrics.ionDisabled ? 'ok' : 'bad'">{{ metrics.ionDisabled ? '已禁用（离线可用）' : '未禁用' }}</b></div>
         <div class="m-row"><span>渲染设备</span><b class="ellip" :title="metrics.renderer">{{ metrics.renderer || '—' }}</b></div>
@@ -150,6 +157,7 @@ const models = ref([]);
 const modelsLoading = ref(false);
 const mode = ref('3d');
 const imagery = ref('none');
+const quality = ref('quality'); // quality | balanced | smooth
 const tool = ref('');
 const state = ref('idle'); // idle | loading | ready | error
 const progressText = ref('');
@@ -169,6 +177,53 @@ const VIEWS = [
   { key: 'home', name: '复位' },
 ];
 
+/**
+ * 模型 LOD / 缓存策略预设。
+ *
+ * 核心矛盾：缩放流畅 vs 保留已加载高清瓦片。
+ * Cesium 默认会按屏幕空间误差（SSE）卸载远距离高清瓦片；
+ * 质量优先档通过：低 SSE + 关 skipLOD + 优先叶子 + 大缓存，
+ * 让「已经飞到眼前看过的高清瓦片」尽量留在缓存里，缩小时不轻易被低清瓦片替换。
+ */
+const QUALITY_PRESETS = {
+  quality: {
+    label: '质量优先',
+    // SSE 越低，同视角下保留的细节层级越高
+    maximumScreenSpaceError: 4,
+    // 不跳过 LOD：严格按层级加载，避免中清瓦片占位
+    skipLevelOfDetail: false,
+    // 先加载叶子（最高清）再回填父级
+    preferLeaves: true,
+    // 关闭地平线动态降清晰度
+    dynamicScreenSpaceError: false,
+    // 不先铺低清占位层
+    progressiveResolutionHeightFraction: 0,
+    // 缓存必须大于模型体积（本地最大模型约 828 MB），否则一定会被卸掉
+    cacheBytes: 1536 * 1024 * 1024,
+    maximumCacheOverflowBytes: 1536 * 1024 * 1024,
+  },
+  balanced: {
+    label: '平衡',
+    maximumScreenSpaceError: 12,
+    skipLevelOfDetail: true,
+    preferLeaves: false,
+    dynamicScreenSpaceError: true,
+    progressiveResolutionHeightFraction: 0.3,
+    cacheBytes: 768 * 1024 * 1024,
+    maximumCacheOverflowBytes: 768 * 1024 * 1024,
+  },
+  smooth: {
+    label: '流畅优先',
+    maximumScreenSpaceError: 24,
+    skipLevelOfDetail: true,
+    preferLeaves: false,
+    dynamicScreenSpaceError: true,
+    progressiveResolutionHeightFraction: 0.3,
+    cacheBytes: 512 * 1024 * 1024,
+    maximumCacheOverflowBytes: 512 * 1024 * 1024,
+  },
+};
+
 const metrics = reactive({
   version: '',
   interactiveMs: null,
@@ -183,6 +238,7 @@ const metrics = reactive({
   tilesTotal: 0,
   commands: 0,
   cacheBytes: 0,
+  qualityPreset: '',
   ionDisabled: false,
   renderer: '',
   coordSource: '',
@@ -305,6 +361,7 @@ function createViewer() {
       WebMercatorTilingScheme: Cesium.WebMercatorTilingScheme,
       UrlTemplateImageryProvider: Cesium.UrlTemplateImageryProvider,
       Rectangle: Cesium.Rectangle,
+      HeadingPitchRange: Cesium.HeadingPitchRange,
       // 诊断用：GCJ 换算函数，探针在页面内构造 scheme 变体时需要
       wgs84ToGcj02,
       gcj02ToWgs84,
@@ -396,19 +453,17 @@ async function loadModel() {
     const url = modelApi.tilesUrl(modelId.value, entry);
     // ⚠️ Cesium 1.145 已把 maximumMemoryUsage 拆成 cacheBytes + maximumCacheOverflowBytes。
     //    论证文档 R6 预判的「API 会改名」在这里实锤，升级时必须过一遍。
+    const preset = QUALITY_PRESETS[quality.value] || QUALITY_PRESETS.quality;
     tileset = await Cesium.Cesium3DTileset.fromUrl(url, {
-      maximumScreenSpaceError: 16,
-      cacheBytes: 512 * 1024 * 1024,
-      maximumCacheOverflowBytes: 512 * 1024 * 1024,
-      skipLevelOfDetail: true,
-      dynamicScreenSpaceError: true,
+      ...preset,
       preloadWhenHidden: false,
       // 司空 2 的 tileset 里 geometricError 常是 1e10 级异常值，
       // 关掉阴影并允许背面剔除能显著减少无效绘制
       shadows: Cesium.ShadowMode.DISABLED,
       backFaceCulling: true,
     });
-    metrics.cacheBytes = 512 * 1024 * 1024;
+    metrics.cacheBytes = preset.cacheBytes;
+    metrics.qualityPreset = preset.label;
 
     // 统计一次点击到「首屏瓦片就位」的真实耗时——这是 G2 的主指标
     const firstPaint = new Promise((resolve) => {
@@ -458,6 +513,7 @@ function removeTileset() {
     tileset = null;
   }
   metrics.tilesLoaded = 0;
+  metrics.qualityPreset = '';
   metrics.interactiveMs = null;
   metrics.fps = null;
   metrics.frames = 0;
