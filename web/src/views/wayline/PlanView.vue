@@ -99,11 +99,11 @@
             <el-input-number v-model="form.height" :min="20" :max="500" :step="10" size="small" controls-position="right" />
           </div>
           <div class="param">
-            <label>地面分辨率</label>
-            <el-input-number v-model="form.gsdCm" :min="0" :max="50" :step="0.5" size="small" controls-position="right" />
+            <label>地面分辨率（cm/px）</label>
+            <el-input-number v-model="form.gsdCm" :min="0.5" :max="50" :step="0.5" size="small" controls-position="right" />
           </div>
           <div class="sub-tip">
-            cm/px；填 0 表示按航高作业，填具体值则由它反算相对航高
+            与航高动态联动：改航高自动算 GSD，改 GSD 自动反算航高；当前按 {{ activeLens.name }}（{{ activeLens.focalEq }} mm 等效焦距）换算
           </div>
           <div v-if="!corridor" class="param">
             <label>云台俯仰（°）</label>
@@ -245,13 +245,38 @@ import { toMapLatLng, gcj02ToWgs84 } from '../../utils/geo';
 
 const store = useSessionStore();
 
-/** 镜头选项与后端 lensProfile 保持一致 */
+/** 35mm 等效画幅基准（用于 GSD 与航高互算） */
+const FRAME_35MM = { w: 36, h: 24 };
+
+/** 镜头选项与后端 lensProfile 保持一致。
+ * 新增 imageW：GSD ↔ 航高 动态换算必需；缺失时用广角默认值。 */
 const LENSES = [
-  { key: 'wide', name: '广角', focalEq: 24 },
-  { key: 'medium', name: '中长焦', focalEq: 70 },
-  { key: 'tele', name: '长焦', focalEq: 168 },
-  { key: 'ir', name: '红外热成像', focalEq: 53 },
+  { key: 'wide', name: '广角', focalEq: 24, imageW: 8064 },
+  { key: 'medium', name: '中长焦', focalEq: 70, imageW: 8064 },
+  { key: 'tele', name: '长焦', focalEq: 168, imageW: 8064 },
+  { key: 'ir', name: '红外热成像', focalEq: 53, imageW: 640 },
 ];
+
+/** 当前生效的镜头（取 form.lens 第一个） */
+const activeLens = computed(() => {
+  const key = form.lens[0] || 'wide';
+  return LENSES.find((l) => l.key === key) || LENSES[0];
+});
+
+/** GSD（cm/px）= 航高（m）× 100 × 画幅宽（mm）/（等效焦距（mm）× 像素宽） */
+function gsdFromHeight(heightM, lens = activeLens.value) {
+  if (!lens?.focalEq || !lens?.imageW || heightM <= 0) return 0;
+  return (heightM * 100 * FRAME_35MM.w) / (lens.focalEq * lens.imageW);
+}
+
+/** 航高（m）= GSD（cm/px）× 等效焦距（mm）× 像素宽 /（100 × 画幅宽（mm）） */
+function heightFromGsd(gsdCm, lens = activeLens.value) {
+  if (!lens?.focalEq || !lens?.imageW || gsdCm <= 0) return 0;
+  return (gsdCm * lens.focalEq * lens.imageW) / (100 * FRAME_35MM.w);
+}
+
+/** 防止航高↔GSD 互相触发死循环的锁 */
+let syncing = false;
 
 const form = reactive({
   templateType: 'mapping2d',
@@ -263,8 +288,8 @@ const form = reactive({
   overlapW: 70,
   direction: 0,
   margin: 0,
-  /** 0 = 不启用，按航高作业；>0 则由 GSD 反算航高 */
-  gsdCm: 0,
+  /** 与航高实时联动，默认按广角 100m 航高换算 */
+  gsdCm: 1.86,
   /** 云台俯仰：-90 正射，倾斜摄影常用 -45 */
   gimbalPitch: -90,
   corridorHalfWidth: 20,
@@ -601,6 +626,7 @@ function onGeometryChanged() {
 watch(
   () => [
     form.height,
+    form.gsdCm,
     form.speed,
     form.overlapH,
     form.overlapW,
@@ -612,6 +638,50 @@ watch(
     form.aircraftKey,
   ],
   () => onGeometryChanged()
+);
+
+/* ---------------- 航高 ↔ 地面分辨率 动态联动 ---------------- */
+watch(
+  () => form.height,
+  (h) => {
+    if (syncing) return;
+    syncing = true;
+    const v = gsdFromHeight(Number(h));
+    if (v > 0) {
+      const rounded = Math.round(v * 100) / 100;
+      if (Math.abs(rounded - form.gsdCm) > 0.01) form.gsdCm = rounded;
+    }
+    syncing = false;
+  }
+);
+
+watch(
+  () => form.gsdCm,
+  (g) => {
+    if (syncing) return;
+    syncing = true;
+    const v = heightFromGsd(Number(g));
+    if (v > 0) {
+      const rounded = Math.round(v);
+      if (Math.abs(rounded - form.height) > 0.5) form.height = rounded;
+    }
+    syncing = false;
+  }
+);
+
+watch(
+  () => activeLens.value.key,
+  () => {
+    // 切镜头后，按当前航高重新计算 GSD，保证两个输入始终自洽
+    if (syncing) return;
+    syncing = true;
+    const v = gsdFromHeight(form.height);
+    if (v > 0) {
+      const rounded = Math.round(v * 100) / 100;
+      if (Math.abs(rounded - form.gsdCm) > 0.01) form.gsdCm = rounded;
+    }
+    syncing = false;
+  }
 );
 
 /* ---------------- 机型 ---------------- */
