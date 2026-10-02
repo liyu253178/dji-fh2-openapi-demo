@@ -332,9 +332,14 @@ try {
   ok('返回全省后下钻目标清空', afterBack.drilledCity === '', afterBack.drilledCity || '空');
   ok('返回全省后区县实体已隐藏', afterBack.districtShown === 0, `${afterBack.districtShown} 个仍显示`);
 
-  /* ---------------- 7. 离线与控制台 ---------------- */
-  console.log('\n[7] 离线与控制台');
-  ok('未请求任何外部域名', external.length === 0, external.length ? [...new Set(external)].join(', ') : '（无）');
+  /* ---------------- 7. 外部依赖与控制台 ---------------- */
+  console.log('\n[7] 外部依赖与控制台');
+  // 2026-10-02 起底图固定高德影像，本身就是外部依赖；收紧为
+  // 「除高德瓦片域名外不允许任何其他外部请求」，防止混入第三方统计/CDN
+  const nonAmap = [...new Set(external.filter((h) => !/(^|\.)autonavi\.com$/.test(h) && !/(^|\.)amap\.com$/.test(h)))];
+  const amapHosts = [...new Set(external)].filter((h) => !nonAmap.includes(h));
+  ok('外部请求仅限高德底图', nonAmap.length === 0,
+    nonAmap.length ? `越界域名：${nonAmap.join(', ')}` : `高德域名 ${amapHosts.length} 个（预期内）`);
   const realErrs = errs.filter((t) => !/ERR_FAILED|ERR_ABORTED|net::/i.test(t));
   ok('控制台 0 错误', realErrs.length === 0, realErrs.slice(0, 2).join(' | '));
 } finally {

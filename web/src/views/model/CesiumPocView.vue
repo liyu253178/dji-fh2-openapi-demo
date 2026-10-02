@@ -11,7 +11,7 @@
           :loading="modelsLoading"
         >
           <el-option v-for="m in models" :key="m.id" :label="m.name" :value="m.id">
-            <span>{{ m.name }}</span>
+            <span>{{ m.name }}<span v-if="!m.nameKnown" class="opt-unknown">（未知名）</span></span>
             <span class="opt-meta">{{ m.file_type === 'model_3d' ? '3D' : '2D' }} · {{ fmtMB(m.bytes) }}</span>
           </el-option>
         </el-select>
@@ -33,8 +33,9 @@
           <el-radio-button value="2d">二维</el-radio-button>
         </el-radio-group>
 
+        <!-- 底图固定高德影像（2026-10-02 产品决策）：不再提供「无底图（离线）」选项，
+             setImagery 的 'none' 分支仅作为代码兜底保留 -->
         <el-radio-group v-model="imagery" size="small" @change="onImageryChange">
-          <el-radio-button value="none">无底图（离线）</el-radio-button>
           <el-radio-button value="amap">高德影像（GCJ-02）</el-radio-button>
         </el-radio-group>
 
@@ -156,7 +157,7 @@ const modelId = ref('');
 const models = ref([]);
 const modelsLoading = ref(false);
 const mode = ref('3d');
-const imagery = ref('none');
+const imagery = ref('amap'); // 底图固定高德影像，不再提供无底图选项
 const quality = ref('quality'); // quality | balanced | smooth
 const tool = ref('');
 const state = ref('idle'); // idle | loading | ready | error
@@ -282,7 +283,7 @@ const getViewer = () => viewer;
  * ------------------------------------------------------------------ */
 function createViewer() {
   viewer = new Cesium.Viewer(host.value, {
-    // 不挂任何默认影像：底图由下面的 setImagery 决定，「无底图」是合法的离线态
+    // 不挂默认影像：底图统一由 setImagery 决定（现在默认高德影像，'none' 仅作代码兜底）
     baseLayer: false,
     baseLayerPicker: false,
     geocoder: false,
@@ -845,6 +846,10 @@ onBeforeUnmount(() => {
   color: var(--c-text-2);
   font-size: var(--fs-xs);
   margin-left: var(--sp-3);
+}
+.opt-unknown {
+  color: var(--c-warn, #e6a23c);
+  font-size: var(--fs-xs);
 }
 .result-bar {
   border-top: 1px solid var(--c-line-soft);

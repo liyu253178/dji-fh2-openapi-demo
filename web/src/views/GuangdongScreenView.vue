@@ -90,8 +90,9 @@
     <!-- 底图切换 + 口径说明 -->
     <footer class="foot">
       <div class="foot-left">
+        <!-- 底图固定高德影像（2026-10-02 产品决策）：不再提供「无底图（离线）」选项，
+             setBasemap 的 'none' 分支仅作为代码兜底保留 -->
         <el-radio-group v-model="basemap" size="small" @change="onBasemapChange">
-          <el-radio-button value="none">无底图（离线）</el-radio-button>
           <el-radio-button value="amap">高德影像</el-radio-button>
         </el-radio-group>
         <span class="tip">
@@ -128,7 +129,8 @@
  * 三条不可妥协的原则（沿用本项目一贯口径）：
  *  1. 指标全部来自真实接口；取不到显示「—」或空态，绝不用随机数/估算填充。
  *  2. 地市高亮只按「该市有无在线设备」判定，这是算出来的，不是编出来的。
- *  3. 底图默认「无」，保证内网离线可用；高德影像是可选增强，需要外网。
+ *  3. 底图固定高德影像（2026-10-02 产品决策，需要外网）；'none' 分支仅作代码兜底，
+ *     如果将来要回内网离线部署，把 basemap 初始值改回 'none' 即可。
  *
  * 底座用 Cesium（见 docs/Cesium 底座引入论证.md 阶段 0 POC 已全项通过）：
  * 与方案 A 的平面装饰地图相比，真三维地球的收益是可以直接叠自有三维模型成果，
@@ -154,7 +156,7 @@ if (Cesium.Ion.defaultServer) Cesium.Ion.defaultServer = undefined;
 
 const root = ref(null);
 const host = ref(null);
-const basemap = ref('none');
+const basemap = ref('amap'); // 底图固定高德影像，不再提供无底图选项
 const clock = ref('');
 
 const CITY_ACTIVE = '#22d3ee';
