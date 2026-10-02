@@ -97,10 +97,22 @@
         <span class="tip">
           边界：DataV.GeoAtlas 2024 版区划 · WGS84 · 21 地市 / {{ districtTotal || '—' }} 区县
           · 当前层级：<b>{{ levelText }}</b>
-          <template v-if="districtStatus === 'loading'">（区县数据加载中…）</template>
+          <template v-if="drilledCity">
+            · 正在展示 <b>{{ drilledCity }}</b> 的区县级图层
+          </template>
+          <template v-else-if="districtStatus === 'loading'">（区县数据加载中…）</template>
           <template v-else-if="districtStatus === 'error'">（区县数据加载失败，已保留地市级）</template>
-          <template v-else>（滚轮缩放到 {{ (LOD_KM) }} km 以下自动展开区县）</template>
+          <template v-else>（滚轮缩放到 {{ (LOD_KM) }} km 以下自动展开区县，或双击任意地市下钻）</template>
         </span>
+        <el-button
+          v-if="drilledCity"
+          type="primary"
+          size="small"
+          class="back-btn"
+          @click="backToProvince"
+        >
+          返回全省
+        </el-button>
       </div>
       <div class="foot-right">
         指标来自 /api/ops/* 与 /api/tickets/*，无数据显示空态，不做估算填充
@@ -173,6 +185,8 @@ const probe = {
   cameraHeight: 0, // 相机高度（米），实测值
   districtOfCityCheck: '', // 区县归属抽查结果（坐标系一致性自检）
   districtSample: '', // 抽查样例，如「广州市/天河区」
+  drilledCity: '', // 当前下钻目标市
+  drillable: true, // 是否已绑定双击下钻事件
 };
 
 /* ---------------- 区县层级（缩放 LOD） ----------------
@@ -193,13 +207,21 @@ const citySolids = [];
 const cityEdges = [];
 /** @type {{entity: object, poly: number[][]}[]} 市名标注（常显，不随层级隐藏） */
 const cityLabels = [];
-/** @type {object[]} 区县实体（面/边/名），构建后只切 show */
+/** @type {object[]} 全部区县实体（面/边/名），构建后只切 show */
 const districtEntities = [];
+/** @type {Map<string, object[]>} 按市分组的区县实体，用于双击下钻 */
+const districtByCity = new Map();
 const level = ref('city');
 const districtTotal = ref(0);
 const districtStatus = ref('idle'); // idle | loading | ready | error
-const levelText = computed(() => (level.value === 'district' ? '区县' : '地市'));
+const drilledCity = ref(''); // 当前下钻到的市名（空表示省域/地市视角）
+const levelText = computed(() => {
+  if (drilledCity.value) return '区县（下钻）';
+  return level.value === 'district' ? '区县' : '地市';
+});
 let lodListener = null;
+/** 双击事件处理器 */
+let dblClickHandler = null;
 
 /* ---------------- 数据派生 ---------------- */
 
@@ -479,9 +501,13 @@ function buildDevices() {
  */
 function buildDistricts() {
   if (!districtData || !viewer) return;
+  districtEntities.length = 0;
+  districtByCity.clear();
   for (const f of districtData.features) {
     const name = f.properties.name;
     const city = f.properties.cityName || '';
+    const cityGroup = districtByCity.get(city) || [];
+    const created = [];
     for (const poly of f.geometry.coordinates) {
       const ring = poly[0];
       const positions = Cesium.Cartesian3.fromDegreesArray(ring.flat());
@@ -507,6 +533,7 @@ function buildDistricts() {
         show: false,
       });
       districtEntities.push(face, edge);
+      created.push(face, edge);
     }
     const [clng, clat] = labelAnchor(
       f.geometry.coordinates[0]?.[0] || [],
@@ -531,6 +558,11 @@ function buildDistricts() {
       show: false,
     });
     districtEntities.push(lb);
+    created.push(lb);
+    if (city) {
+      cityGroup.push(...created);
+      districtByCity.set(city, cityGroup);
+    }
     // 归属自检留痕：区县名带上市名，验收脚本据此抽查「区县确实在它的市里」
     if (city && !probe.districtSample) probe.districtSample = `${city}/${name}`;
   }
@@ -590,27 +622,45 @@ function checkDistrictInCity() {
 function applyLod() {
   if (!viewer) return;
   const isDistrict = level.value === 'district';
-  for (const c of citySolids) c.entity.show = !isDistrict;
+  const isDrilled = !!drilledCity.value;
+  // 下钻时只显示目标市的区县；非下钻时按相机高度统一显示/隐藏
+  for (const c of citySolids) c.entity.show = !isDistrict && !isDrilled;
   for (const e of cityEdges) {
-    // 区县层级下把市界描边压到贴地：立体块已经隐藏，描边还悬在 45km 会「飘在半空」
+    // 区县层级或下钻时把市界描边压到贴地：立体块已经隐藏，描边还悬在 45km 会「飘在半空」
+    const isDown = isDistrict || isDrilled;
     e.entity.polyline.positions = Cesium.Cartesian3.fromDegreesArrayHeights(
-      e.poly.flatMap(([lng, lat]) => [lng, lat, isDistrict ? 400 : e.h])
+      e.poly.flatMap(([lng, lat]) => [lng, lat, isDown ? 400 : e.h])
     );
   }
   for (const l of cityLabels) {
     l.entity.position = Cesium.Cartesian3.fromDegrees(
       ...labelAnchor(l.poly, null),
-      isDistrict ? 6000 : l.h + 2000
+      isDrilled ? 6000 : isDistrict ? 6000 : l.h + 2000
     );
+    // 下钻时隐藏其他市标注，保留目标市标注
+    const belongs = isDrilled ? l.entity.name?.replace('citylabel:', '') === drilledCity.value : true;
+    l.entity.show = belongs;
   }
-  for (const e of districtEntities) e.show = isDistrict;
-  probe.level = level.value;
-  probe.districtShown = isDistrict ? districtEntities.length : 0;
+  if (isDrilled) {
+    // 下钻：只显示目标市的区县，隐藏其他
+    const target = districtByCity.get(drilledCity.value) || [];
+    for (const e of districtEntities) e.show = target.includes(e);
+  } else {
+    for (const e of districtEntities) e.show = isDistrict;
+  }
+  probe.level = isDrilled ? 'district-drilled' : level.value;
+  probe.districtShown = isDrilled
+    ? (districtByCity.get(drilledCity.value) || []).filter((e) => e.show).length
+    : isDistrict
+      ? districtEntities.length
+      : 0;
+  probe.drilledCity = drilledCity.value;
 }
 
-/** 相机高度驱动的层级判定。用 camera.changed 而不是 postRender，省掉每帧计算 */
+/** 相机高度驱动的层级判定。用 camera.changed 而不是 postRender，省掉每帧计算。
+ *  当用户通过双击下钻到具体市时，暂停相机高度驱动的层级切换，避免视角调整时被自动切回。 */
 function updateLod() {
-  if (!viewer) return;
+  if (!viewer || drilledCity.value) return;
   const h = viewer.camera.positionCartographic.height;
   probe.cameraHeight = Math.round(h);
   const next = h < LOD_DISTRICT_HEIGHT ? 'district' : 'city';
@@ -622,6 +672,86 @@ function updateLod() {
   }
 }
 
+/** 计算一组 WGS84 坐标的包围矩形 [west, south, east, north] */
+function bboxFromFeatures(features) {
+  let w = 180;
+  let s = 90;
+  let e = -180;
+  let n = -90;
+  for (const f of features) {
+    for (const poly of f.geometry.coordinates) {
+      for (const ring of poly) {
+        for (const [lng, lat] of ring) {
+          if (lng < w) w = lng;
+          if (lng > e) e = lng;
+          if (lat < s) s = lat;
+          if (lat > n) n = lat;
+        }
+      }
+    }
+  }
+  return [w, s, e, n];
+}
+
+/** 双击下钻到指定市：加载区县数据、隐藏其他市、飞行到该市范围 */
+async function drillDown(cityName) {
+  if (!viewer || !cityName) return;
+  const cityFeature = gdGeo.features.find((f) => f.properties.name === cityName);
+  if (!cityFeature) return;
+  await ensureDistricts();
+  if (!districtByCity.has(cityName)) return;
+  drilledCity.value = cityName;
+  level.value = 'district';
+  applyLod();
+  // 飞入该市：用区县数据或市边界计算 bbox，留 10% 边距
+  const cityDistricts = districtData.features.filter((f) => f.properties.cityName === cityName);
+  const features = cityDistricts.length ? cityDistricts : [cityFeature];
+  const [w, s, e, n] = bboxFromFeatures(features);
+  const padding = 0.12;
+  const rect = Cesium.Rectangle.fromDegrees(
+    w - (e - w) * padding,
+    s - (n - s) * padding,
+    e + (e - w) * padding,
+    n + (n - s) * padding
+  );
+  viewer.camera.flyTo({
+    destination: rect,
+    duration: 1.2,
+    easingFunction: Cesium.EasingFunction.QUART_OUT,
+  });
+}
+
+/** 返回全省（地市）视角 */
+function backToProvince() {
+  if (!viewer) return;
+  drilledCity.value = '';
+  level.value = 'city';
+  applyLod();
+  viewer.camera.flyTo({
+    destination: Cesium.Rectangle.fromDegrees(108.6, 19.5, 118.3, 26.4),
+    duration: 1.2,
+    easingFunction: Cesium.EasingFunction.QUART_OUT,
+  });
+}
+
+/** 绑定双击下钻：双击市立体块/边界/标注 → 进入该市区县图层 */
+function bindDrillDown() {
+  if (!viewer || dblClickHandler) return;
+  const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  handler.setInputAction((click) => {
+    const picked = viewer.scene.pick(click.position);
+    if (!picked?.id?.name) return;
+    const name = String(picked.id.name);
+    // city: / edge: / citylabel: 前缀都对应同一个市
+    const match = name.match(/^(city|edge|citylabel):(.+)$/);
+    if (!match) return;
+    const cityName = match[2];
+    drillDown(cityName);
+  }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+  dblClickHandler = handler;
+  probe.drillable = true;
+}
+
 function rebuildEntities() {
   if (!viewer) return;
   viewer.entities.removeAll();
@@ -629,6 +759,7 @@ function rebuildEntities() {
   cityEdges.length = 0;
   cityLabels.length = 0;
   districtEntities.length = 0;
+  districtByCity.clear();
   buildCities();
   buildDevices();
   // 区县数据若已加载过，要跟着重建，否则刷新后区县层就空了
@@ -679,6 +810,7 @@ function createViewer() {
   lodListener = () => updateLod();
   viewer.camera.changed.addEventListener(lodListener);
   updateLod();
+  bindDrillDown();
 }
 
 /* ---------------- 图表 ---------------- */
@@ -781,7 +913,13 @@ onMounted(async () => {
   clockTimer = window.setInterval(tick, 1000);
   await loadAll();
   timer = window.setInterval(loadAll, 60000);
-  window.__GD_SCREEN__ = { probe, ready: true, getViewer: () => viewer };
+  window.__GD_SCREEN__ = {
+    probe,
+    ready: true,
+    getViewer: () => viewer,
+    drillDown,
+    backToProvince,
+  };
 });
 
 onBeforeUnmount(() => {
@@ -792,6 +930,9 @@ onBeforeUnmount(() => {
   lineChart?.dispose();
   if (viewer && !viewer.isDestroyed()) {
     if (lodListener) viewer.camera.changed.removeEventListener(lodListener);
+    if (dblClickHandler && !dblClickHandler.isDestroyed()) {
+      dblClickHandler.destroy();
+    }
     viewer.destroy();
   }
   delete window.__GD_SCREEN__;
@@ -1019,6 +1160,13 @@ onBeforeUnmount(() => {
 }
 .tip {
   color: #475569;
+}
+.back-btn {
+  margin-left: 8px;
+  background: linear-gradient(90deg, #0ea5e9, #22d3ee);
+  border: none;
+  color: #020813;
+  font-weight: 600;
 }
 
 @media (max-width: 1440px) {

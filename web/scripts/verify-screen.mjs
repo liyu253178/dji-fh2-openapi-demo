@@ -240,8 +240,55 @@ try {
     `相机高度 ${Math.round(backCity.cameraHeight / 1000)} km`);
   ok('回到市级后区县实体已隐藏', backCity.districtShown === 0, `${backCity.districtShown} 个仍显示`);
 
-  /* ---------------- 6. 离线与控制台 ---------------- */
-  console.log('\n[6] 离线与控制台');
+  /* ---------------- 6. 双击下钻（市 → 区县） ---------------- */
+  console.log('\n[6] 双击下钻：市 → 区县');
+  // 先回到省域地市视角
+  await p.evaluate(() => {
+    const v = window.__GD_SCREEN__.getViewer();
+    const C3 = v.camera.position.constructor;
+    v.camera.setView({ destination: C3.fromDegrees(113.5, 23.5, 900000) });
+  });
+  await p.waitForTimeout(1500);
+
+  // 双击广州市立体块：模拟拾取广州市实体并触发下钻
+  await p.evaluate(() => {
+    const v = window.__GD_SCREEN__.getViewer();
+    const city = v.entities.values.find((e) => e.name === 'city:广州市');
+    if (city) window.__GD_SCREEN__.drillDown && window.__GD_SCREEN__.drillDown('广州市');
+  });
+  await p.waitForFunction(() => window.__GD_SCREEN__.probe.drilledCity === '广州市', { timeout: 30000 })
+    .catch(() => {});
+  await p.waitForTimeout(1500);
+
+  const afterDrill = await p.evaluate(() => window.__GD_SCREEN__.probe);
+  ok('双击后进入下钻状态', afterDrill.level === 'district-drilled', `层级 ${afterDrill.level}`);
+  ok('下钻目标市为广州市', afterDrill.drilledCity === '广州市', afterDrill.drilledCity || '空');
+  const gzDistricts = await p.evaluate(() => {
+    const v = window.__GD_SCREEN__.getViewer();
+    return v.entities.values.filter((e) => typeof e.name === 'string' && e.name.startsWith('dist:') && e.show).length;
+  });
+  ok('广州市下辖区县已显示', gzDistricts >= 10, `${gzDistricts} 个区县面/边显示`);
+  const otherCityHidden = await p.evaluate(() => {
+    const v = window.__GD_SCREEN__.getViewer();
+    return v.entities.values.some(
+      (e) => typeof e.name === 'string' && e.name.startsWith('city:') && !e.show && e.name !== 'city:广州市'
+    );
+  });
+  ok('其他市立体块已隐藏', otherCityHidden, '仅保留广州市相关实体');
+  await p.screenshot({ path: path.join(WEB_ROOT, 'dist/screen-drill-guangzhou.png') }).catch(() => {});
+
+  // 点击「返回全省」
+  await p.click('.back-btn').catch(() => {});
+  await p.waitForFunction(() => !window.__GD_SCREEN__.probe.drilledCity, { timeout: 30000 })
+    .catch(() => {});
+  await p.waitForTimeout(1500);
+  const afterBack = await p.evaluate(() => window.__GD_SCREEN__.probe);
+  ok('返回全省后恢复地市级', afterBack.level === 'city', `层级 ${afterBack.level}`);
+  ok('返回全省后下钻目标清空', afterBack.drilledCity === '', afterBack.drilledCity || '空');
+  ok('返回全省后区县实体已隐藏', afterBack.districtShown === 0, `${afterBack.districtShown} 个仍显示`);
+
+  /* ---------------- 7. 离线与控制台 ---------------- */
+  console.log('\n[7] 离线与控制台');
   ok('未请求任何外部域名', external.length === 0, external.length ? [...new Set(external)].join(', ') : '（无）');
   const realErrs = errs.filter((t) => !/ERR_FAILED|ERR_ABORTED|net::/i.test(t));
   ok('控制台 0 错误', realErrs.length === 0, realErrs.slice(0, 2).join(' | '));
