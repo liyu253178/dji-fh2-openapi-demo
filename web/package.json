@@ -18,13 +18,15 @@
     "verify:review-entry": "node scripts/verify-review-entry.mjs",
     "verify:dispatch-gate": "node scripts/verify-dispatch-gate.mjs",
     "verify:model-2d": "node scripts/verify-model-2d.mjs",
-    "verify:dispatch-flow": "node scripts/verify-dispatch-flow.mjs"
+    "verify:dispatch-flow": "node scripts/verify-dispatch-flow.mjs",
+  "verify:cesium-poc": "node scripts/verify-cesium-poc.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
     "@volcengine/rtc": "^4.60.2",
     "agora-rtc-sdk-ng": "^4.23.0",
     "axios": "^1.7.7",
+    "cesium": "^1.145.0",
     "echarts": "^5.5.1",
     "element-plus": "^2.8.8",
     "leaflet": "^1.9.4",

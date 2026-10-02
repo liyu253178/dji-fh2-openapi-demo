@@ -160,6 +160,11 @@ export const modelApi = {
    * 这里单独放宽到 15 分钟，配合界面上的进度文案；命中本地缓存时本来就是秒回。
    */
   files: (id) => http.get(`/model/${encodeURIComponent(id)}/files`, { timeout: 900000 }),
+  /**
+   * 本地已缓存模型清单（不走司空 2）。
+   * 断网 / 未配置 TK 时也能拿到可渲染的模型，是「离线能不能跑」的入口。
+   */
+  local: () => http.get('/model/local'),
   /** 单文件读取地址（b3dm / glb / tileset.json） */
   assetSrc: (id, p) =>
     `/api/model/${encodeURIComponent(id)}/asset?path=${encodeURIComponent(p)}`,
@@ -176,6 +181,26 @@ export const modelApi = {
     const tpl = i >= 0 ? template.slice(i) : '';
     // 前缀末尾的 '/' 由 {z} 接管，避免拼出 double slash
     return `/api/model/${encodeURIComponent(id)}/asset?path=${encodeURIComponent(prefix)}${tpl}`;
+  },
+  /**
+   * 路径式瓦片地址（三维 Tiles 链路专用）
+   *
+   * 与 assetSrc 的区别是「基准 URL 是不是可拼的」：
+   * tileset.json 内部写的是相对 uri（`BlockAYXY_L16_1.json`、`../BlockA/tileset.json`），
+   * 引擎会以当前 tileset.json 的 URL 为基准解析。查询串形式下基准路径被钉死在
+   * `/api/model/:id/asset`，相对地址会被拼到 `/api/model/xxx/BlockAYXY…` 这种不存在的位置。
+   * 路径式让相对解析自然成立，同时天然支持带空格的多级目录
+   * （真实数据里有 `Project1 2/B3DM/Model_0/tileset.json`）。
+   *
+   * 只按段编码：保留 `/` 作为分隔符，空格编成 %20，中文正常编码。
+   */
+  tilesUrl: (id, p = '') => {
+    const rel = String(p)
+      .split('/')
+      .filter((s) => s && s !== '.')
+      .map((s) => encodeURIComponent(s))
+      .join('/');
+    return `/api/model/${encodeURIComponent(id)}/tiles/${rel}`;
   },
   /** 预览图（走后端代理，避免签名过期/跨域裂图） */
   previewSrc: (id) => `/api/model/${encodeURIComponent(id)}/preview`,

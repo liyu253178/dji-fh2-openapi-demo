@@ -176,6 +176,17 @@ const MIME = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.bin': 'application/octet-stream',
+  // ---- 以下为 Cesium 三维底座 POC 补充（3D Tiles 1.1 / glTF 2.0 扩展）----
+  '.ktx2': 'image/ktx2',
+  '.basis': 'application/octet-stream',
+  '.webp2': 'image/webp',
+  '.wasm': 'application/wasm',
+  '.kml': 'application/vnd.google-earth.kml+xml',
+  '.xml': 'application/xml; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8',
+  '.zip': 'application/zip',
 };
 
 async function ensureDir(p) {
@@ -301,6 +312,55 @@ router.get('/', async (req, res) => {
   };
   listCache = { ts: Date.now(), data };
   res.json(data);
+});
+
+/**
+ * 本地已缓存模型清单（**不依赖司空 2**）
+ *
+ * 为什么要单独一条：
+ * 三维底座的离线可跑性（Cesium POC 的 G4）要求「断外网仍能打开一个模型」。
+ * 而列表接口 /model 是实时向司空 2 拉的，没有 TK / 没网就无数据可渲染，
+ * 于是「离线能不能跑」这件事永远测不了。这里直接读磁盘上的模型缓存目录，
+ * 只依赖 _manifest.json（下载解压时已落盘），因此断网也可用。
+ *
+ * ⚠️ 必须注册在 /:id 之前，否则 '/local' 会被当成一个模型 id。
+ */
+router.get('/local', async (req, res) => {
+  try {
+    if (!fs.existsSync(CACHE_ROOT)) return res.json({ ok: true, data: { list: [], total: 0 } });
+    const dirs = (await fsp.readdir(CACHE_ROOT, { withFileTypes: true })).filter((d) => d.isDirectory());
+    const list = [];
+    for (const d of dirs) {
+      const dir = path.join(CACHE_ROOT, d.name);
+      const manifestPath = path.join(dir, '_manifest.json');
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const m = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+        const roots = (m.tilesetRoots || []).filter(Boolean);
+        const entry = roots[0] || m.tileset || null;
+        list.push({
+          id: d.name,
+          name: m.name || d.name,
+          file_type: entry ? 'model_3d' : m.raster2d ? 'model_2d' : 'unknown',
+          entry,
+          fileCount: (m.files || []).length,
+          // 体积按清单累加，不用递归 stat（几千个文件 stat 一次要好几秒）
+          bytes: (m.files || []).reduce((n, f) => n + (Number(f.size) || 0), 0),
+          hasRaster2d: !!m.raster2d,
+          assetVersion: m.assetVersion || null,
+          cachedAt: m.ts || null,
+        });
+      } catch {
+        /* 清单坏了就跳过这一个，不影响整表 */
+      }
+    }
+    // 体积大的排前面：POC 优先拿大包压性能
+    list.sort((a, b) => b.bytes - a.bytes);
+    res.json({ ok: true, data: { list, total: list.length } });
+  } catch (e) {
+    log.error('模型库', `本地缓存清单读取失败：${e.message}`);
+    res.status(500).json({ ok: false, message: `本地缓存清单读取失败：${e.message}` });
+  }
 });
 
 /** 模型详情 */
@@ -680,12 +740,85 @@ router.get('/:id/asset', async (req, res) => {
   if (!rel) return res.status(400).json({ ok: false, message: '缺少 path' });
   const dir = path.join(CACHE_ROOT, id);
   const target = path.resolve(dir, rel);
-  if (!target.startsWith(dir)) return res.status(400).json({ ok: false, message: '非法路径' });
+  if (!target.startsWith(dir + path.sep)) return res.status(400).json({ ok: false, message: '非法路径' });
   if (!fs.existsSync(target)) return res.status(404).json({ ok: false, message: '文件不存在' });
   const ext = path.extname(target).toLowerCase();
   res.set('Content-Type', MIME[ext] || 'application/octet-stream');
   res.set('Cache-Control', 'private, max-age=3600');
   fs.createReadStream(target).pipe(res);
+});
+
+/**
+ * 路径式瓦片读取：GET /api/model/:id/tiles/<包内相对路径>
+ *
+ * 为什么要有它（不是重复造 /:id/asset）：
+ * 三维瓦片链路里，tileset.json 内部写的是**相对 uri**，例如
+ *   "content": { "uri": "BlockAYXY_L16_1.json" }
+ *   "content": { "uri": "../BlockA/tileset.json" }
+ * 引用方（Cesium / 任何三维引擎）会以「当前 tileset.json 的 URL」为基准去解析这些相对地址。
+ *
+ * 而 /:id/asset?path=xxx 是查询串形式：基准 URL 的路径部分是固定的 `/api/model/:id/asset`，
+ * 相对地址会被解析到 `/api/model/xxx/BlockAYXY_L16_1.json` 这类**不存在**的位置。
+ * 本项目真实数据里还有 `Project1 2/B3DM/Model_0/tileset.json` 这种带空格、多级子目录的路径，
+ * 以及外部 tileset 引用，命令行与浏览器对空格的编码处理还不一致——查询串形式在这里必翻车。
+ *
+ * 路径式路由让相对 uri「自然成立」：base 变成 /api/model/:id/tiles/<入口目录>/，
+ * 引擎拼出来的地址正好又落回本路由。这是 R4 的解法。
+ *
+ * 安全：仍然只允许读 CACHE_ROOT/:id 之内的文件，做 realpath 边界校验，
+ * 防 ../ 穿越与符号链接逃逸。
+ */
+router.get('/:id/tiles/*', async (req, res) => {
+  const id = String(req.params.id);
+  // Express 4 把通配部分放在 params[0]；Express 5 为 params.splat，这里兼容两种
+  const raw = String(req.params[0] ?? req.params.splat ?? '');
+  if (!raw) return res.status(400).type('text/plain').send('缺少瓦片路径');
+
+  const dir = path.join(CACHE_ROOT, id);
+  let target;
+  try {
+    // 通配段可能是多段组成，逐段解码，避免文件名里本来就含 % 时被二次解码搞坏
+    const rel = raw
+      .split('/')
+      .filter(Boolean)
+      .map((seg) => {
+        try {
+          return decodeURIComponent(seg);
+        } catch {
+          return seg;
+        }
+      })
+      .join('/');
+    target = path.resolve(dir, rel);
+  } catch {
+    return res.status(400).type('text/plain').send('非法瓦片路径');
+  }
+  if (target !== dir && !target.startsWith(dir + path.sep)) {
+    log.warn('模型库', `瓦片路径越界被拒 id=${id} raw=${raw}`);
+    return res.status(400).type('text/plain').send('非法瓦片路径');
+  }
+
+  let st;
+  try {
+    st = await fsp.stat(target);
+    // 目录不放行（避免 Cesium 拿不到内容却一直重试）
+    if (!st.isFile()) return res.status(404).type('text/plain').send('不是文件');
+  } catch {
+    return res.status(404).type('text/plain').send('瓦片不存在');
+  }
+
+  const ext = path.extname(target).toLowerCase();
+  res.set('Content-Type', MIME[ext] || 'application/octet-stream');
+  res.set('Content-Length', String(st.size));
+  // 瓦片内容按 hash 命名/内容不变，可缓存；但它是私有项目数据，不加 public
+  res.set('Cache-Control', 'private, max-age=3600');
+  res.set('Access-Control-Allow-Origin', '*');
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(target).on('error', (e) => {
+    log.error('模型库', `瓦片读流失败 id=${id} path=${raw}：${e.message}`);
+    if (!res.headersSent) res.status(500).type('text/plain').send('读取失败');
+    else res.destroy();
+  }).pipe(res);
 });
 
 export default router;
