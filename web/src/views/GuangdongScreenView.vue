@@ -95,7 +95,11 @@
           <el-radio-button value="amap">高德影像</el-radio-button>
         </el-radio-group>
         <span class="tip">
-          边界：DataV.GeoAtlas 2024 版区划 · WGS84 · 21 地市
+          边界：DataV.GeoAtlas 2024 版区划 · WGS84 · 21 地市 / {{ districtTotal || '—' }} 区县
+          · 当前层级：<b>{{ levelText }}</b>
+          <template v-if="districtStatus === 'loading'">（区县数据加载中…）</template>
+          <template v-else-if="districtStatus === 'error'">（区县数据加载失败，已保留地市级）</template>
+          <template v-else>（滚轮缩放到 {{ (LOD_KM) }} km 以下自动展开区县）</template>
         </span>
       </div>
       <div class="foot-right">
@@ -156,7 +160,46 @@ let lineChart = null;
 const barRef = ref(null);
 const lineRef = ref(null);
 /** 供验收脚本读取的实测数字 */
-const probe = { cities: 0, entities: 0, devicePoints: 0, cityTickets: [] };
+const probe = {
+  cities: 0,
+  entities: 0,
+  devicePoints: 0,
+  cityTickets: [],
+  cityLabels: 0, // 行政区名标注数（市）
+  districtTotal: 0, // 区县级面要素数
+  districtShown: 0, // 当前实际显示的区县实体数
+  districtLabels: 0,
+  level: 'city', // 'city' | 'district'
+  cameraHeight: 0, // 相机高度（米），实测值
+  districtOfCityCheck: '', // 区县归属抽查结果（坐标系一致性自检）
+  districtSample: '', // 抽查样例，如「广州市/天河区」
+};
+
+/* ---------------- 区县层级（缩放 LOD） ----------------
+ * 区县数据 835KB，不进首屏：只在相机降到阈值以下时才 fetch。
+ * 放在 public/ 而不是打包进 bundle，就是为了这条——首屏代价必须是 0。
+ */
+const DISTRICT_URL = `${import.meta.env.BASE_URL}geo/440000.districts.json`;
+/** 相机高度低于此值（米）进入区县层级。广东南北跨度约 660km，260km 大致对应「看到单个市域」 */
+const LOD_DISTRICT_HEIGHT = 260000;
+const LOD_KM = Math.round(LOD_DISTRICT_HEIGHT / 1000);
+
+/** 区县面数据：加载一次后常驻，之后只切 show，不来回重建 */
+let districtData = null;
+let districtLoading = false;
+/** @type {{entity: object, poly: number[][]}[]} 市立体块，切换层级时要改高度/显隐 */
+const citySolids = [];
+/** @type {{entity: object, poly: number[][], h: number}[]} 市描边 */
+const cityEdges = [];
+/** @type {{entity: object, poly: number[][]}[]} 市名标注（常显，不随层级隐藏） */
+const cityLabels = [];
+/** @type {object[]} 区县实体（面/边/名），构建后只切 show */
+const districtEntities = [];
+const level = ref('city');
+const districtTotal = ref(0);
+const districtStatus = ref('idle'); // idle | loading | ready | error
+const levelText = computed(() => (level.value === 'district' ? '区县' : '地市'));
+let lodListener = null;
 
 /* ---------------- 数据派生 ---------------- */
 
@@ -301,6 +344,26 @@ const activeCities = computed(() => {
 
 const Gcj02Scheme = makeGcj02TilingScheme(Cesium);
 
+/**
+ * 多边形环 → 标注锚点。
+ * 优先用官方 center；没有时退化成「环的经度/纬度范围中点」而不是算术平均点——
+ * 算术平均会被密集顶点拉偏，凹形行政区上尤其明显。
+ */
+function labelAnchor(ring, center) {
+  if (Array.isArray(center) && center.length === 2) return center;
+  let minx = 180;
+  let maxx = -180;
+  let miny = 90;
+  let maxy = -90;
+  for (const [x, y] of ring) {
+    if (x < minx) minx = x;
+    if (x > maxx) maxx = x;
+    if (y < miny) miny = y;
+    if (y > maxy) maxy = y;
+  }
+  return [(minx + maxx) / 2, (miny + maxy) / 2];
+}
+
 function buildCities() {
   const active = activeCities.value;
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
@@ -324,12 +387,13 @@ function buildCities() {
               }, false)
             )
           : base.withAlpha(alpha);
-      viewer.entities.add({
+      const solid = viewer.entities.add({
         name: `city:${name}`,
         polygon: { hierarchy: new Cesium.PolygonHierarchy(positions), extrudedHeight: h, material },
       });
+      citySolids.push({ entity: solid, poly: poly[0], isActive });
       // 顶边描边：拉伸块没有描边会糊成一片
-      viewer.entities.add({
+      const edge = viewer.entities.add({
         name: `edge:${name}`,
         polyline: {
           positions: Cesium.Cartesian3.fromDegreesArrayHeights(
@@ -344,10 +408,34 @@ function buildCities() {
           }),
         },
       });
+      cityEdges.push({ entity: edge, poly: poly[0], h });
       n += 1;
     }
+    // 行政区名：浮在拉伸块顶面之上，否则会被块自己盖住
+    const outerRing = f.geometry.coordinates[0]?.[0] || [];
+    const [clng, clat] = labelAnchor(outerRing, f.properties.center);
+    const lb = viewer.entities.add({
+      name: `citylabel:${name}`,
+      position: Cesium.Cartesian3.fromDegrees(clng, clat, h + 2000),
+      label: {
+        text: name,
+        font: '600 15px sans-serif',
+        fillColor: Cesium.Color.fromCssColorString(isActive ? '#e6fbff' : '#cbd5e1'),
+        outlineColor: Cesium.Color.fromCssColorString('#020813'),
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        showBackground: true,
+        backgroundColor: Cesium.Color.fromCssColorString('#041223aa'),
+        backgroundPadding: new Cesium.Cartesian2(5, 2),
+        // 太远时缩小，避免省域视角下 21 个名字糊成一团
+        scaleByDistance: new Cesium.NearFarScalar(2.0e5, 1.0, 2.5e6, 0.55),
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 6.0e6),
+      },
+    });
+    cityLabels.push({ entity: lb, poly: outerRing, h });
   }
   probe.cities = gdGeo.features.length;
+  probe.cityLabels = cityLabels.length;
   probe.entities = n;
 }
 
@@ -384,11 +472,171 @@ function buildDevices() {
   probe.devicePoints = n;
 }
 
+/**
+ * 构建区县实体。
+ * 只构建一次：之后进/出区县层级靠 show 切换，不做「移除—重建」——
+ * 124 个区县 × 3 类实体来回重建会让缩放过程明显卡顿。
+ */
+function buildDistricts() {
+  if (!districtData || !viewer) return;
+  for (const f of districtData.features) {
+    const name = f.properties.name;
+    const city = f.properties.cityName || '';
+    for (const poly of f.geometry.coordinates) {
+      const ring = poly[0];
+      const positions = Cesium.Cartesian3.fromDegreesArray(ring.flat());
+      if (positions.length < 3) continue;
+      const face = viewer.entities.add({
+        name: `dist:${name}`,
+        polygon: {
+          hierarchy: new Cesium.PolygonHierarchy(positions),
+          // 不拉伸：区县层级是「看区划」，贴地填色才有行政边界的读法
+          material: Cesium.Color.fromCssColorString('#38bdf8').withAlpha(0.16),
+        },
+        show: false,
+      });
+      const edge = viewer.entities.add({
+        name: `distedge:${name}`,
+        polyline: {
+          positions: Cesium.Cartesian3.fromDegreesArrayHeights(
+            ring.flatMap(([lng, lat]) => [lng, lat, 400])
+          ),
+          width: 1.5,
+          material: Cesium.Color.fromCssColorString('#7dd3fc').withAlpha(0.8),
+        },
+        show: false,
+      });
+      districtEntities.push(face, edge);
+    }
+    const [clng, clat] = labelAnchor(
+      f.geometry.coordinates[0]?.[0] || [],
+      f.properties.center
+    );
+    const lb = viewer.entities.add({
+      name: `distlabel:${name}`,
+      position: Cesium.Cartesian3.fromDegrees(clng, clat, 1500),
+      label: {
+        text: name,
+        // 13px 起步：150km 相机高度下 scaleByDistance 还会再乘 ~0.8，
+        // 11px 实测会缩到 7px 左右，肉眼读不了（首版验收截图踩过）
+        font: '600 13px sans-serif',
+        fillColor: Cesium.Color.fromCssColorString('#e0f2fe'),
+        outlineColor: Cesium.Color.fromCssColorString('#020813'),
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        // 区县名只在「再近一点」才出现，避免中距离下 124 个名字互相压字
+        scaleByDistance: new Cesium.NearFarScalar(5.0e4, 1.0, 6.0e5, 0.7),
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 5.0e5),
+      },
+      show: false,
+    });
+    districtEntities.push(lb);
+    // 归属自检留痕：区县名带上市名，验收脚本据此抽查「区县确实在它的市里」
+    if (city && !probe.districtSample) probe.districtSample = `${city}/${name}`;
+  }
+  probe.districtTotal = districtData.features.length;
+  probe.districtLabels = districtEntities.filter((e) => e.label).length;
+  districtTotal.value = districtData.features.length;
+}
+
+/** 按需拉取区县数据：只有真的缩到区县层级才发起请求 */
+async function ensureDistricts() {
+  if (districtData || districtLoading) return;
+  districtLoading = true;
+  districtStatus.value = 'loading';
+  try {
+    const res = await fetch(DISTRICT_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    districtData = await res.json();
+    buildDistricts();
+    checkDistrictInCity();
+    districtStatus.value = 'ready';
+  } catch (e) {
+    // 加载失败不能让大屏变成「什么都没有」：停在市级并明确告知，不静默降级
+    districtStatus.value = 'error';
+    console.warn('[screen] 区县数据加载失败，保持地市级：', e?.message || e);
+  } finally {
+    districtLoading = false;
+    applyLod();
+  }
+}
+
+/**
+ * 坐标系一致性自检：每个区县的中心点必须落在它所属市的多边形内。
+ * 这条看似多余，实际是唯一能自动发现「市/区县两层数据坐标系不一致」的手段——
+ * 一旦错位（比如一层 GCJ、一层 WGS84），抽查会失败而不是悄悄画歪。
+ */
+function checkDistrictInCity() {
+  const byCity = new Map();
+  for (const f of gdGeo.features) byCity.set(f.properties.name, f);
+  let bad = 0;
+  const samples = [];
+  for (const f of districtData.features) {
+    const [lng, lat] = labelAnchor(
+      f.geometry.coordinates[0]?.[0] || [],
+      f.properties.center
+    );
+    const city = byCity.get(f.properties.cityName);
+    if (!city) continue;
+    if (!pointInFeature(lng, lat, city)) {
+      bad += 1;
+      if (samples.length < 3) samples.push(`${f.properties.cityName}/${f.properties.name}`);
+    }
+  }
+  probe.districtOfCityCheck = bad === 0 ? `ok（${districtData.features.length} 个区县全部落在其所属市域内）` : `异常 ${bad} 个：${samples.join('、')}`;
+}
+
+/** 按当前层级切换：市级看拉伸块，区县级看平面区划，两者不重叠显示 */
+function applyLod() {
+  if (!viewer) return;
+  const isDistrict = level.value === 'district';
+  for (const c of citySolids) c.entity.show = !isDistrict;
+  for (const e of cityEdges) {
+    // 区县层级下把市界描边压到贴地：立体块已经隐藏，描边还悬在 45km 会「飘在半空」
+    e.entity.polyline.positions = Cesium.Cartesian3.fromDegreesArrayHeights(
+      e.poly.flatMap(([lng, lat]) => [lng, lat, isDistrict ? 400 : e.h])
+    );
+  }
+  for (const l of cityLabels) {
+    l.entity.position = Cesium.Cartesian3.fromDegrees(
+      ...labelAnchor(l.poly, null),
+      isDistrict ? 6000 : l.h + 2000
+    );
+  }
+  for (const e of districtEntities) e.show = isDistrict;
+  probe.level = level.value;
+  probe.districtShown = isDistrict ? districtEntities.length : 0;
+}
+
+/** 相机高度驱动的层级判定。用 camera.changed 而不是 postRender，省掉每帧计算 */
+function updateLod() {
+  if (!viewer) return;
+  const h = viewer.camera.positionCartographic.height;
+  probe.cameraHeight = Math.round(h);
+  const next = h < LOD_DISTRICT_HEIGHT ? 'district' : 'city';
+  if (next !== level.value) {
+    level.value = next;
+    if (next === 'district') ensureDistricts();
+    else applyLod();
+    // 进区县时 ensureDistricts 内部会在数据到位后再 applyLod 一次
+  }
+}
+
 function rebuildEntities() {
   if (!viewer) return;
   viewer.entities.removeAll();
+  citySolids.length = 0;
+  cityEdges.length = 0;
+  cityLabels.length = 0;
+  districtEntities.length = 0;
   buildCities();
   buildDevices();
+  // 区县数据若已加载过，要跟着重建，否则刷新后区县层就空了
+  if (districtData) {
+    buildDistricts();
+    probe.districtLabels = districtEntities.filter((e) => e.label).length;
+  }
+  applyLod();
 }
 
 function setBasemap(kind) {
@@ -425,6 +673,12 @@ function createViewer() {
   viewer.camera.setView({
     destination: Cesium.Rectangle.fromDegrees(108.6, 19.5, 118.3, 26.4),
   });
+  // 缩放驱动的地市/区县层级切换。percentageChanged 调大一点，
+  // 否则相机每动一丝就触发一次判定（缩放过程中会疯狂调用）
+  viewer.camera.percentageChanged = 0.05;
+  lodListener = () => updateLod();
+  viewer.camera.changed.addEventListener(lodListener);
+  updateLod();
 }
 
 /* ---------------- 图表 ---------------- */
@@ -536,7 +790,10 @@ onBeforeUnmount(() => {
   if (animRaf) window.cancelAnimationFrame(animRaf);
   barChart?.dispose();
   lineChart?.dispose();
-  if (viewer && !viewer.isDestroyed()) viewer.destroy();
+  if (viewer && !viewer.isDestroyed()) {
+    if (lodListener) viewer.camera.changed.removeEventListener(lodListener);
+    viewer.destroy();
+  }
   delete window.__GD_SCREEN__;
 });
 </script>

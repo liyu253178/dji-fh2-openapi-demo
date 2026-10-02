@@ -162,8 +162,86 @@ try {
   }
   await p.setViewportSize({ width: 1920, height: 1080 });
 
-  /* ---------------- 5. 离线与控制台 ---------------- */
-  console.log('\n[5] 离线与控制台');
+  /* ---------------- 5. 行政区名 + 区县层级（缩放 LOD） ---------------- */
+  console.log('\n[5] 行政区名与区县层级');
+  // Cesium 的 label 画在 canvas 里，DOM 上查不到，只能从实体上读文本——
+  // 但「文本存在」不等于「画出来了」，所以这一节再配一张截图做人眼确认。
+  const readLabels = (prefix) =>
+    p.evaluate((pfx) => {
+      const v = window.__GD_SCREEN__.getViewer();
+      const out = [];
+      for (const e of v.entities.values) {
+        if (typeof e.name === 'string' && e.name.startsWith(pfx) && e.label) {
+          const t = e.label.text?.getValue?.();
+          out.push({ text: t, show: e.show });
+        }
+      }
+      return out;
+    }, prefix);
+
+  const cityNames = await readLabels('citylabel:');
+  const cityTexts = cityNames.map((l) => l.text);
+  ok('21 个地市名已标注', cityTexts.length === 21, `实际 ${cityTexts.length} 个`);
+  ok(
+    '市名是真实区划名（抽查）',
+    ['广州市', '深圳市', '佛山市'].every((n) => cityTexts.includes(n)),
+    cityTexts.slice(0, 4).join('、') + ' …'
+  );
+
+  const beforeZoom = await p.evaluate(() => window.__GD_SCREEN__.probe);
+  info(`首屏相机高度 ${Math.round(beforeZoom.cameraHeight / 1000)} km，层级 ${beforeZoom.level}`);
+  ok(
+    '首屏不加载区县数据（835KB 按需加载）',
+    beforeZoom.districtTotal === 0,
+    `首屏区县要素 ${beforeZoom.districtTotal}`
+  );
+
+  // 缩到广州市域上空：高度 150km < 260km 阈值，应切到区县级
+  await p.evaluate(() => {
+    const v = window.__GD_SCREEN__.getViewer();
+    // 页面里没有全局 Cesium，从已有对象的构造函数反查 Cartesian3
+    const C3 = v.camera.position.constructor;
+    v.camera.setView({ destination: C3.fromDegrees(113.3, 23.2, 150000) });
+  });
+  await p.waitForFunction(() => window.__GD_SCREEN__.probe.level === 'district', { timeout: 30000 })
+    .catch(() => {});
+  await p.waitForFunction(() => window.__GD_SCREEN__.probe.districtTotal > 0, { timeout: 30000 })
+    .catch(() => {});
+  await p.waitForTimeout(1500);
+
+  const inDistrict = await p.evaluate(() => window.__GD_SCREEN__.probe);
+  ok('缩放到阈值以下切换到区县级', inDistrict.level === 'district',
+    `相机高度 ${Math.round(inDistrict.cameraHeight / 1000)} km`);
+  ok('区县已渲染', inDistrict.districtTotal > 100, `${inDistrict.districtTotal} 个区县`);
+  ok('区县实体已显示', inDistrict.districtShown > 0, `${inDistrict.districtShown} 个实体`);
+  ok('区县名已标注', inDistrict.districtLabels > 100, `${inDistrict.districtLabels} 个标注`);
+  ok(
+    '区县归属自检通过（坐标系一致性）',
+    String(inDistrict.districtOfCityCheck).startsWith('ok'),
+    inDistrict.districtOfCityCheck || '（未执行）'
+  );
+  const distNames = (await readLabels('distlabel:')).map((l) => l.text);
+  ok(
+    '区县名是真实区划名（抽查）',
+    ['天河区', '越秀区', '南山区'].every((n) => distNames.includes(n)),
+    distNames.slice(0, 4).join('、') + ' …'
+  );
+  await p.screenshot({ path: path.join(WEB_ROOT, 'dist/screen-district.png') }).catch(() => {});
+
+  // 拉回省域视角：区县应隐藏，避免与市级拉伸块叠着画
+  await p.evaluate(() => {
+    const v = window.__GD_SCREEN__.getViewer();
+    const C3 = v.camera.position.constructor;
+    v.camera.setView({ destination: C3.fromDegrees(113.5, 23.5, 900000) });
+  });
+  await p.waitForTimeout(2000);
+  const backCity = await p.evaluate(() => window.__GD_SCREEN__.probe);
+  ok('拉回省域视角回到地市级', backCity.level === 'city',
+    `相机高度 ${Math.round(backCity.cameraHeight / 1000)} km`);
+  ok('回到市级后区县实体已隐藏', backCity.districtShown === 0, `${backCity.districtShown} 个仍显示`);
+
+  /* ---------------- 6. 离线与控制台 ---------------- */
+  console.log('\n[6] 离线与控制台');
   ok('未请求任何外部域名', external.length === 0, external.length ? [...new Set(external)].join(', ') : '（无）');
   const realErrs = errs.filter((t) => !/ERR_FAILED|ERR_ABORTED|net::/i.test(t));
   ok('控制台 0 错误', realErrs.length === 0, realErrs.slice(0, 2).join(' | '));
