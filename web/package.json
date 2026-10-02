@@ -19,7 +19,8 @@
     "verify:dispatch-gate": "node scripts/verify-dispatch-gate.mjs",
     "verify:model-2d": "node scripts/verify-model-2d.mjs",
     "verify:dispatch-flow": "node scripts/verify-dispatch-flow.mjs",
-  "verify:cesium-poc": "node scripts/verify-cesium-poc.mjs"
+  "verify:cesium-poc": "node scripts/verify-cesium-poc.mjs",
+  "verify:screen": "node scripts/verify-screen.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

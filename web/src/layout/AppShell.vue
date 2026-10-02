@@ -146,6 +146,7 @@ const store = useSessionStore();
  */
 const nav = [
   { path: '/dashboard', title: '首页大屏', icon: 'Monitor', badge: 'online' },
+  { path: '/screen', title: '省域态势', icon: 'Aim' },
   { path: '/cockpit', title: '虚拟座舱', icon: 'Coordinate' },
   {
     title: '航线规划',
@@ -158,11 +159,10 @@ const nav = [
   },
   { path: '/devices', title: '设备管理', icon: 'Box' },
   {
-    title: '三维模型',
+    title: '模型管理',
     icon: 'Collection',
     children: [
       { path: '/models', title: '模型库', icon: 'Collection' },
-      { path: '/models/geo', title: '三维浏览与量测', icon: 'View' },
       // Cesium 三维底座 POC（阶段 0）——验证完即删，故挂在同一分组下且排在最后
       { path: '/models/geo-cesium', title: '三维底座 POC', icon: 'DataLine' },
     ],
