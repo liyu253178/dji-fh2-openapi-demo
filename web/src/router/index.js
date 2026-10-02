@@ -25,6 +25,14 @@ const routes = [
   { path: '/devices', name: 'devices', component: () => import('../views/DeviceView.vue'), meta: { title: '设备管理', subtitle: '机场与飞行器', icon: 'Box' } },
   { path: '/models', name: 'models', component: () => import('../views/ModelLibraryView.vue'), meta: { title: '模型库', subtitle: '项目模型预览', icon: 'Collection' } },
   { path: '/models/geo', name: 'model-geo', component: () => import('../views/ModelGeoView.vue'), meta: { title: '三维模型', subtitle: '多源影像 · 量测 · 2D/3D', icon: 'View' } },
+  // Cesium 三维底座 POC（阶段 0）：独立路由、随时可删，用于打坐标/性能/量测/离线四个硬指标。
+  // 路由级懒加载，Cesium chunk 不进任何业务页首屏。
+  {
+    path: '/models/geo-cesium',
+    name: 'model-geo-cesium',
+    component: () => import('../views/model/CesiumPocView.vue'),
+    meta: { title: '三维底座 POC', subtitle: 'Cesium 独立验证', icon: 'DataLine' },
+  },
 
   // ---------- 一期新增 ----------
   { path: '/assets', name: 'assets', component: () => import('../views/AssetLibraryView.vue'), meta: { title: '巡检成果', subtitle: '航拍影像与架次', icon: 'FolderOpened' } },

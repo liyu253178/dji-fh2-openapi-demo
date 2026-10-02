@@ -7,6 +7,15 @@
   </head>
   <body>
     <div id="app"></div>
+    <!--
+      Cesium 运行时静态资源（Worker / 内置影像 / 第三方解码器 / 控件样式）的对外根路径。
+      必须早于任何三维页面的模块加载执行：Cesium 的 buildModuleUrl 会读这个全局量，
+      读不到就退回按 import.meta.url 解析，在 Vite 下会解析到 node_modules 路径而 404。
+      资源实体由 vite.config.js 的 cesiumAssets 插件产出到 dist/cesium（构建）或直接映射（开发）。
+    -->
+    <script>
+      window.CESIUM_BASE_URL = '/cesium/';
+    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
