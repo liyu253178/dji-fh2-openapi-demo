@@ -136,6 +136,17 @@ DUAV 不是「无人机地图大屏」，而是一套**把空中发现转成可�
 > （`{z}/{x}/{y}.png`，标准 Web Mercator XYZ，WGS84）。平台按瓦片层级 z=12–23 渲染，
 > 可缩放到 GSD 0.0168 m/px 的原始分辨率，并显示瓦片数与地面采样距离。
 
+**三维底座 POC（Cesium）**——只做验证，不替换现有 three.js 方案
+
+![Cesium 三维底座 POC](./docs/screenshots/14-cesium-poc.png)
+
+> 这是一条**独立路由 `/models/geo-cesium`，随时可删**，用途只有一个：回答「三维成果页要不要迁到 Cesium」。
+> 四个硬指标全部实测通过（16 项断言，`node web/scripts/verify-cesium-poc.mjs` 可复跑）：
+> 坐标落位与既有体系一致（差 4.9e-8°，约 0.005 m）、822 MB 模型稳定 60 fps（M1 Pro / ANGLE Metal）、
+> 量测口径与独立实现互差 0.11 m / 298 m、断外网仍可加载且单端口可服务（禁 Ion，不依赖任何外部域名）。
+> 代价 +7.9 MB（静态资源 6.8 MB + JS gzip 1.1 MB），只进这一条懒加载 chunk，业务页首屏不受影响。
+> 结论是**双引擎并存、不全站替换**；完整论证与 go/no-go 门槛见 [Cesium 底座引入论证](./docs/Cesium%20底座引入论证.md)。
+
 **② 监管闭环**（本项目自研部分：发现 → 标记 → 派单 → 台账）
 
 | 巡检成果 | 审核工作台 |
