@@ -329,31 +329,62 @@ router.get('/local', async (req, res) => {
   try {
     if (!fs.existsSync(CACHE_ROOT)) return res.json({ ok: true, data: { list: [], total: 0 } });
     const dirs = (await fsp.readdir(CACHE_ROOT, { withFileTypes: true })).filter((d) => d.isDirectory());
-    const list = [];
+    // 先把清单都读出来；老版本下载时没把模型名写进清单，name 会缺
+    const entries = [];
     for (const d of dirs) {
       const dir = path.join(CACHE_ROOT, d.name);
       const manifestPath = path.join(dir, '_manifest.json');
       if (!fs.existsSync(manifestPath)) continue;
       try {
-        const m = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
-        const roots = (m.tilesetRoots || []).filter(Boolean);
-        const entry = roots[0] || m.tileset || null;
-        list.push({
-          id: d.name,
-          name: m.name || d.name,
-          file_type: entry ? 'model_3d' : m.raster2d ? 'model_2d' : 'unknown',
-          entry,
-          fileCount: (m.files || []).length,
-          // 体积按清单累加，不用递归 stat（几千个文件 stat 一次要好几秒）
-          bytes: (m.files || []).reduce((n, f) => n + (Number(f.size) || 0), 0),
-          hasRaster2d: !!m.raster2d,
-          assetVersion: m.assetVersion || null,
-          cachedAt: m.ts || null,
-        });
+        entries.push({ id: d.name, manifestPath, m: JSON.parse(await fsp.readFile(manifestPath, 'utf8')) });
       } catch {
         /* 清单坏了就跳过这一个，不影响整表 */
       }
     }
+    // 补名：只对 name 缺失的发生（新下载的包在落盘时已带 name），并行拉、短超时，
+    // 拉到就写回清单——下次（包括断网时）直接用，不再依赖在线接口。
+    // 失败（离线/无 TK/超时）就让列表用目录 id 兜底并标 nameKnown:false，
+    // 不能因为补名把 /local「只依赖磁盘、断网可用」的初衷破坏掉。
+    const needName = entries.filter((e) => !e.m.name);
+    if (needName.length) {
+      await Promise.allSettled(
+        needName.map(async (e) => {
+          try {
+            const r = await request({
+              method: 'GET',
+              path: `/model/${encodeURIComponent(e.id)}`,
+              tag: '模型库',
+              timeout: 8000,
+            });
+            if (!r?.ok || !r.data?.name) return;
+            e.m.name = r.data.name;
+            e.m.userName = r.data.user_name || e.m.userName || null;
+            await fsp.writeFile(e.manifestPath, JSON.stringify(e.m));
+          } catch {
+            /* 离线或超时：跳过，列表回退用 id */
+          }
+        })
+      );
+    }
+    const list = entries.map((e) => {
+      const m = e.m;
+      const roots = (m.tilesetRoots || []).filter(Boolean);
+      const entry = roots[0] || m.tileset || null;
+      return {
+        id: e.id,
+        name: m.name || e.id,
+        // name 是目录 id 兜底的（清单里没存名且这次也没拉到）→ 前端提示「未知名」
+        nameKnown: !!m.name,
+        file_type: entry ? 'model_3d' : m.raster2d ? 'model_2d' : 'unknown',
+        entry,
+        fileCount: (m.files || []).length,
+        // 体积按清单累加，不用递归 stat（几千个文件 stat 一次要好几秒）
+        bytes: (m.files || []).reduce((n, f) => n + (Number(f.size) || 0), 0),
+        hasRaster2d: !!m.raster2d,
+        assetVersion: m.assetVersion || null,
+        cachedAt: m.ts || null,
+      };
+    });
     // 体积大的排前面：POC 优先拿大包压性能
     list.sort((a, b) => b.bytes - a.bytes);
     res.json({ ok: true, data: { list, total: list.length } });
@@ -642,18 +673,18 @@ router.get('/:id/files', async (req, res) => {
     const b3dm = files.filter((f) => /\.b3dm$/i.test(f.path));
     const gltf = files.filter((f) => /\.(glb|gltf)$/i.test(f.path));
     // 点云：LAS 上传到司空 2 后会转成 pnts，此前前端直接丢弃这类瓦片
-    const pntsFiles = files.filter((f) => /\.pnts$/i.test(f.path));
-    // 点云：LAS 上传到司空 2 后会转成 pnts，此前前端直接丢弃这类瓦片
     const pnts = files.filter((f) => /\.pnts$/i.test(f.path));
     const r2 = resolveRaster2d(dir, files);
     const manifest = {
       files,
+      // 模型名：下载时 detail 接口是在线的，顺手存下来，离线列表才有名字可显
+      name: d?.name || null,
+      userName: d?.user_name || null,
       tileset: ts.tileset,
       tilesets: ts.tilesets,
       tilesetRoots: ts.tilesetRoots,
       b3dm: b3dm.map((f) => f.path),
       gltf: gltf.map((f) => f.path),
-      pnts: pntsFiles.map((f) => f.path),
       pnts: pnts.map((f) => f.path),
       // 二维模型（正射影像金字塔）：没有 tileset，靠这个字段走瓦片渲染
       raster2d: r2 ? { ...r2, ...(await readMapReport(dir, files) || {}) } : null,

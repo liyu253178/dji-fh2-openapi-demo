@@ -163,8 +163,8 @@ const nav = [
     icon: 'Collection',
     children: [
       { path: '/models', title: '模型库', icon: 'Collection' },
-      // Cesium 三维底座 POC（阶段 0）——验证完即删，故挂在同一分组下且排在最后
-      { path: '/models/geo-cesium', title: '三维底座 POC', icon: 'DataLine' },
+      // 模型分析（原三维底座 POC，阶段 0 验证通过后转正为功能页）
+      { path: '/models/geo-cesium', title: '模型分析', icon: 'DataLine' },
     ],
   },
   {
