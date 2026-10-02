@@ -36,6 +36,8 @@
         <el-radio-group v-model="imagery" size="small" @change="onImageryChange">
           <el-radio-button value="none">无底图（离线）</el-radio-button>
           <el-radio-button value="amap">高德影像（GCJ-02）</el-radio-button>
+          <!-- 临时诊断项：定位花屏是否由自定义 TilingScheme 引起，定位后删除 -->
+          <el-radio-button value="amap-std">高德-标准（不纠偏）</el-radio-button>
         </el-radio-group>
 
         <span class="sep" />
@@ -137,6 +139,8 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { modelApi } from '../../api/dji.js';
 import { wgs84ToGcj02, gcj02ToWgs84 } from '../../utils/geo.js';
 import { ecefToLlh, llhToEcef, looksLikeEcef } from '../../utils/ecef.js';
+// GCJ 纠偏瓦片方案与测地距离已抽到 utils，省域大屏复用同一份，避免两处实现漂移
+import { makeGcj02TilingScheme, groundDistanceM } from '../../utils/cesiumGcj.js';
 
 /** 离线前提：禁掉 Ion。任何 Ion 资源请求在私有化/内网环境都会失败。 */
 Cesium.Ion.defaultAccessToken = '';
@@ -214,57 +218,8 @@ const err = (msg) => {
  * 取瓦片时反向：行列号 → GCJ 经纬度 → 转回 WGS84 得到这张瓦片该铺的位置。
  * 这样地球还是 WGS84 的地球，只是取图时对齐到了 GCJ 的格网。
  * ------------------------------------------------------------------ */
-class Gcj02WebMercatorTilingScheme extends Cesium.WebMercatorTilingScheme {
-  positionToTileXY(position, level, result) {
-    const lon = Cesium.Math.toDegrees(position.longitude);
-    const lat = Cesium.Math.toDegrees(position.latitude);
-    const [glon, glat] = wgs84ToGcj02(lon, lat);
-    return super.positionToTileXY(
-      Cesium.Cartographic.fromRadians(
-        Cesium.Math.toRadians(glon),
-        Cesium.Math.toRadians(glat)
-      ),
-      level,
-      result
-    );
-  }
-
-  tileXYToRectangle(x, y, level, result) {
-    const gcj = super.tileXYToRectangle(x, y, level, new Cesium.Rectangle());
-    // 四角 GCJ→WGS84 取包络。纠偏量在瓦片尺度上近似平移，四角差异可忽略。
-    let west = Infinity;
-    let east = -Infinity;
-    let south = Infinity;
-    let north = -Infinity;
-    for (const [lonDeg, latDeg] of [
-      [Cesium.Math.toDegrees(gcj.west), Cesium.Math.toDegrees(gcj.south)],
-      [Cesium.Math.toDegrees(gcj.east), Cesium.Math.toDegrees(gcj.south)],
-      [Cesium.Math.toDegrees(gcj.east), Cesium.Math.toDegrees(gcj.north)],
-      [Cesium.Math.toDegrees(gcj.west), Cesium.Math.toDegrees(gcj.north)],
-    ]) {
-      const [wlon, wlat] = gcj02ToWgs84(lonDeg, latDeg);
-      west = Math.min(west, wlon);
-      east = Math.max(east, wlon);
-      south = Math.min(south, wlat);
-      north = Math.max(north, wlat);
-    }
-    const rect = result ?? new Cesium.Rectangle();
-    rect.west = Cesium.Math.toRadians(west);
-    rect.east = Cesium.Math.toRadians(east);
-    rect.south = Cesium.Math.toRadians(south);
-    rect.north = Cesium.Math.toRadians(north);
-    return rect;
-  }
-}
-
-/** 两个经纬度点之间的地面距离（米）——用测地线，不用直线 */
-function groundDistanceM(lon1, lat1, lon2, lat2) {
-  const g = new Cesium.EllipsoidGeodesic(
-    Cesium.Cartographic.fromDegrees(lon1, lat1),
-    Cesium.Cartographic.fromDegrees(lon2, lat2)
-  );
-  return g.surfaceDistance;
-}
+const Gcj02WebMercatorTilingScheme = makeGcj02TilingScheme(Cesium);
+const distanceM = (lon1, lat1, lon2, lat2) => groundDistanceM(Cesium, lon1, lat1, lon2, lat2);
 
 const getViewer = () => viewer;
 
@@ -384,7 +339,8 @@ function setImagery(kind) {
   metrics.gcjShiftM = null;
   if (kind === 'none') return;
 
-  const scheme = new Gcj02WebMercatorTilingScheme();
+  // amap-std：标准 Web Mercator、不做 GCJ 换算 —— 仅用于 A/B 定位花屏来源
+  const scheme = kind === 'amap-std' ? new Cesium.WebMercatorTilingScheme() : new Gcj02WebMercatorTilingScheme();
   layers.addImageryProvider(
     new Cesium.UrlTemplateImageryProvider({
       // 高德影像，行列号按 GCJ-02；纠偏由上面的 TilingScheme 负责
@@ -399,7 +355,7 @@ function setImagery(kind) {
   const c = footprintCenter();
   if (c) {
     const [glon, glat] = wgs84ToGcj02(c.lon, c.lat);
-    metrics.gcjShiftM = groundDistanceM(c.lon, c.lat, glon, glat);
+    metrics.gcjShiftM = distanceM(c.lon, c.lat, glon, glat);
   }
 }
 

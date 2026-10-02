@@ -16,6 +16,8 @@ import { createRouter, createWebHistory } from 'vue-router';
 const routes = [
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { title: '首页大屏', subtitle: '巡检指挥中心', icon: 'Monitor', full: true } },
+  // 广东省域态势大屏：Cesium 真三维地球 + 21 地市立体块，指标全部走真实接口
+  { path: '/screen', name: 'screen', component: () => import('../views/GuangdongScreenView.vue'), meta: { title: '省域态势', subtitle: '广东省 · 21 地市', icon: 'Aim', full: true } },
   { path: '/cockpit', name: 'cockpit', component: () => import('../views/CockpitView.vue'), meta: { title: '虚拟座舱', subtitle: '实时飞行控制', icon: 'Coordinate', full: true } },
   // 「航线管理」升级为一级栏目「航线规划」：司空 2 不开放航线规划，规划能力由平台自建
   { path: '/wayline/plan', name: 'wayline-plan', component: () => import('../views/wayline/PlanView.vue'), meta: { title: '规划工作台', subtitle: '绘制测区 · 生成航线', icon: 'EditPen' } },
@@ -24,9 +26,10 @@ const routes = [
   // 「设备管理」原占用 /assets，一期「巡检成果」需要 /assets，故迁至 /devices
   { path: '/devices', name: 'devices', component: () => import('../views/DeviceView.vue'), meta: { title: '设备管理', subtitle: '机场与飞行器', icon: 'Box' } },
   { path: '/models', name: 'models', component: () => import('../views/ModelLibraryView.vue'), meta: { title: '模型库', subtitle: '项目模型预览', icon: 'Collection' } },
-  { path: '/models/geo', name: 'model-geo', component: () => import('../views/ModelGeoView.vue'), meta: { title: '三维模型', subtitle: '多源影像 · 量测 · 2D/3D', icon: 'View' } },
   // Cesium 三维底座 POC（阶段 0）：独立路由、随时可删，用于打坐标/性能/量测/离线四个硬指标。
   // 路由级懒加载，Cesium chunk 不进任何业务页首屏。
+  // 注：原 three.js 版「三维浏览与量测」（/models/geo，ModelGeoView）已按产品决策下线删除，
+  //     需要找回时看 git 历史（提交「Cesium POC」之前的版本）。
   {
     path: '/models/geo-cesium',
     name: 'model-geo-cesium',
