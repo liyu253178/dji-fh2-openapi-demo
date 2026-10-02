@@ -98,7 +98,7 @@
           边界：DataV.GeoAtlas 2024 版区划 · WGS84 · 21 地市 / {{ districtTotal || '—' }} 区县
           · 当前层级：<b>{{ levelText }}</b>
           <template v-if="drilledCity">
-            · 正在展示 <b>{{ drilledCity }}</b> 的区县级图层
+            · 正在展示 <b>{{ drilledCity }}</b> 的区县级图层（双击其他地市可直接切换）
           </template>
           <template v-else-if="districtStatus === 'loading'">（区县数据加载中…）</template>
           <template v-else-if="districtStatus === 'error'">（区县数据加载失败，已保留地市级）</template>
@@ -413,7 +413,7 @@ function buildCities() {
         name: `city:${name}`,
         polygon: { hierarchy: new Cesium.PolygonHierarchy(positions), extrudedHeight: h, material },
       });
-      citySolids.push({ entity: solid, poly: poly[0], isActive });
+      citySolids.push({ entity: solid, poly: poly[0], isActive, cityName: name });
       // 顶边描边：拉伸块没有描边会糊成一片
       const edge = viewer.entities.add({
         name: `edge:${name}`,
@@ -430,7 +430,7 @@ function buildCities() {
           }),
         },
       });
-      cityEdges.push({ entity: edge, poly: poly[0], h });
+      cityEdges.push({ entity: edge, poly: poly[0], h, cityName: name });
       n += 1;
     }
     // 行政区名：浮在拉伸块顶面之上，否则会被块自己盖住
@@ -454,7 +454,7 @@ function buildCities() {
         distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 6.0e6),
       },
     });
-    cityLabels.push({ entity: lb, poly: outerRing, h });
+    cityLabels.push({ entity: lb, poly: outerRing, h, cityName: name });
   }
   probe.cities = gdGeo.features.length;
   probe.cityLabels = cityLabels.length;
@@ -623,8 +623,11 @@ function applyLod() {
   if (!viewer) return;
   const isDistrict = level.value === 'district';
   const isDrilled = !!drilledCity.value;
-  // 下钻时只显示目标市的区县；非下钻时按相机高度统一显示/隐藏
-  for (const c of citySolids) c.entity.show = !isDistrict && !isDrilled;
+  // 下钻时：目标市隐藏立体块（让位给它的区县平面），其他市保留立体块作为「可点击切换」的入口。
+  // 这样下钻状态下双击别的市就能直接切过去，不必先返回全省。
+  for (const c of citySolids) {
+    c.entity.show = isDrilled ? c.cityName !== drilledCity.value : !isDistrict;
+  }
   for (const e of cityEdges) {
     // 区县层级或下钻时把市界描边压到贴地：立体块已经隐藏，描边还悬在 45km 会「飘在半空」
     const isDown = isDistrict || isDrilled;
@@ -635,11 +638,10 @@ function applyLod() {
   for (const l of cityLabels) {
     l.entity.position = Cesium.Cartesian3.fromDegrees(
       ...labelAnchor(l.poly, null),
-      isDrilled ? 6000 : isDistrict ? 6000 : l.h + 2000
+      isDistrict || isDrilled ? 6000 : l.h + 2000
     );
-    // 下钻时隐藏其他市标注，保留目标市标注
-    const belongs = isDrilled ? l.entity.name?.replace('citylabel:', '') === drilledCity.value : true;
-    l.entity.show = belongs;
+    // 下钻时所有市名都保留：用户要靠名字认出并双击切换到别的市
+    l.entity.show = true;
   }
   if (isDrilled) {
     // 下钻：只显示目标市的区县，隐藏其他

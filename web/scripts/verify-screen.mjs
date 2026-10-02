@@ -268,14 +268,59 @@ try {
     return v.entities.values.filter((e) => typeof e.name === 'string' && e.name.startsWith('dist:') && e.show).length;
   });
   ok('广州市下辖区县已显示', gzDistricts >= 10, `${gzDistricts} 个区县面/边显示`);
-  const otherCityHidden = await p.evaluate(() => {
+  const solidState = await p.evaluate(() => {
     const v = window.__GD_SCREEN__.getViewer();
-    return v.entities.values.some(
-      (e) => typeof e.name === 'string' && e.name.startsWith('city:') && !e.show && e.name !== 'city:广州市'
+    const gz = v.entities.values.find((e) => e.name === 'city:广州市');
+    const others = v.entities.values.filter(
+      (e) => typeof e.name === 'string' && e.name.startsWith('city:') && e.name !== 'city:广州市'
     );
+    return {
+      gzShown: !!gz?.show,
+      othersShown: others.filter((e) => e.show).length,
+      othersTotal: others.length,
+    };
   });
-  ok('其他市立体块已隐藏', otherCityHidden, '仅保留广州市相关实体');
+  ok('目标市立体块已隐藏（让位给区县平面）', solidState.gzShown === false);
+  ok(
+    '其他市立体块保持可见（可直接双击切换）',
+    solidState.othersShown === solidState.othersTotal && solidState.othersTotal > 0,
+    `${solidState.othersShown}/${solidState.othersTotal} 个市仍可点击`
+  );
   await p.screenshot({ path: path.join(WEB_ROOT, 'dist/screen-drill-guangzhou.png') }).catch(() => {});
+
+  /* ---------------- 6b. 下钻状态下切换到另一个市 ---------------- */
+  console.log('\n[6b] 下钻状态下切换到另一个市');
+  await p.evaluate(() => {
+    window.__GD_SCREEN__.drillDown && window.__GD_SCREEN__.drillDown('深圳市');
+  });
+  await p.waitForFunction(() => window.__GD_SCREEN__.probe.drilledCity === '深圳市', { timeout: 30000 })
+    .catch(() => {});
+  await p.waitForTimeout(1500);
+
+  const afterSwitch = await p.evaluate(() => window.__GD_SCREEN__.probe);
+  ok('直接切换到深圳市', afterSwitch.drilledCity === '深圳市', afterSwitch.drilledCity || '空');
+  ok('切换后仍处于下钻层级', afterSwitch.level === 'district-drilled', `层级 ${afterSwitch.level}`);
+  const switchState = await p.evaluate(() => {
+    const v = window.__GD_SCREEN__.getViewer();
+    const gz = v.entities.values.find((e) => e.name === 'city:广州市');
+    const sz = v.entities.values.find((e) => e.name === 'city:深圳市');
+    const shownDist = v.entities.values
+      .filter((e) => typeof e.name === 'string' && e.name.startsWith('dist:') && e.show)
+      .map((e) => e.name);
+    return {
+      gzShown: !!gz?.show,
+      szShown: !!sz?.show,
+      shownDistCount: shownDist.length,
+    };
+  });
+  ok('深圳市立体块已隐藏', switchState.szShown === false);
+  ok('广州市立体块已恢复（可再次切回）', switchState.gzShown === true);
+  ok(
+    '切换后仅深圳市区县可见',
+    switchState.shownDistCount > 0 && switchState.shownDistCount < gzDistricts + 30,
+    `${switchState.shownDistCount} 个区县面/边显示`
+  );
+  await p.screenshot({ path: path.join(WEB_ROOT, 'dist/screen-drill-shenzhen.png') }).catch(() => {});
 
   // 点击「返回全省」
   await p.click('.back-btn').catch(() => {});
