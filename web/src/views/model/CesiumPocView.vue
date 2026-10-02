@@ -36,8 +36,6 @@
         <el-radio-group v-model="imagery" size="small" @change="onImageryChange">
           <el-radio-button value="none">无底图（离线）</el-radio-button>
           <el-radio-button value="amap">高德影像（GCJ-02）</el-radio-button>
-          <!-- 临时诊断项：定位花屏是否由自定义 TilingScheme 引起，定位后删除 -->
-          <el-radio-button value="amap-std">高德-标准（不纠偏）</el-radio-button>
         </el-radio-group>
 
         <span class="sep" />
@@ -303,6 +301,13 @@ function createViewer() {
       Cartesian3: Cesium.Cartesian3,
       EllipsoidGeodesic: Cesium.EllipsoidGeodesic,
       Math: Cesium.Math,
+      // 诊断用：探针需要在页面内即时构造/更换 TilingScheme 变体做二分定位
+      WebMercatorTilingScheme: Cesium.WebMercatorTilingScheme,
+      UrlTemplateImageryProvider: Cesium.UrlTemplateImageryProvider,
+      Rectangle: Cesium.Rectangle,
+      // 诊断用：GCJ 换算函数，探针在页面内构造 scheme 变体时需要
+      wgs84ToGcj02,
+      gcj02ToWgs84,
     },
     get metrics() {
       return { ...metrics, modelId: modelId.value, state: state.value };
@@ -339,8 +344,7 @@ function setImagery(kind) {
   metrics.gcjShiftM = null;
   if (kind === 'none') return;
 
-  // amap-std：标准 Web Mercator、不做 GCJ 换算 —— 仅用于 A/B 定位花屏来源
-  const scheme = kind === 'amap-std' ? new Cesium.WebMercatorTilingScheme() : new Gcj02WebMercatorTilingScheme();
+  const scheme = new Gcj02WebMercatorTilingScheme();
   layers.addImageryProvider(
     new Cesium.UrlTemplateImageryProvider({
       // 高德影像，行列号按 GCJ-02；纠偏由上面的 TilingScheme 负责

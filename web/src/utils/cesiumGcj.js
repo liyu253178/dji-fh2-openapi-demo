@@ -18,9 +18,29 @@ import { wgs84ToGcj02, gcj02ToWgs84 } from './geo.js';
  * 思路：地球仍按 WGS84 渲染，只在「问瓦片」和「铺瓦片」两步做换算：
  *  - 取瓦片：WGS84 坐标 → 转 GCJ-02 → 算行列号
  *  - 铺瓦片：行列号 → GCJ 矩形 → 四角转回 WGS84 得包络
+ *
+ * ⚠️ 必须 override `projection` 让它不再返回 WebMercatorProjection 实例（实测踩坑）：
+ * ImageryLayer 对 Web Mercator 影像有一条 GPU 快速路径（useWebMercatorT），
+ * 该路径里「覆盖计算」用 tileXYToNativeRectangle（标准格网）、「纹理定位」用
+ * readyImagery.rectangle（我们的偏移包络）——两套格子差一个 GCJ 位移（约 500m ≈ 1~2 个瓦片），
+ * UV 窗口整体越界后被钳位拉伸，整屏花屏成竖条纹（2026-10-02 实测复现与定位）。
+ * 走「地理坐标慢路径」时覆盖与定位都用 tileXYToRectangle 包络，自洽，渲染清晰。
+ * project/unproject 仍委托给真实的 Web Mercator 投影，行为不变，只是骗过 instanceof 判定。
  */
 export function makeGcj02TilingScheme(Cesium) {
   return class Gcj02WebMercatorTilingScheme extends Cesium.WebMercatorTilingScheme {
+    get projection() {
+      if (!this._gcjProjection) {
+        const real = this._projection;
+        this._gcjProjection = {
+          project: (...args) => real.project(...args),
+          unproject: (...args) => real.unproject(...args),
+          ellipsoid: real.ellipsoid,
+        };
+      }
+      return this._gcjProjection;
+    }
+
     positionToTileXY(position, level, result) {
       const lon = Cesium.Math.toDegrees(position.longitude);
       const lat = Cesium.Math.toDegrees(position.latitude);
