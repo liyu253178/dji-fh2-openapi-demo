@@ -41,17 +41,74 @@ export const swathKOf = (focalEq) => FRAME_W / focalEq;
 /** 理论系数：沿航向片基 / 航高 */
 export const stepKOf = (focalEq) => FRAME_H / focalEq;
 
+/* ============================================================================
+ * 按机型解析镜头 —— 机型适配的落地处
+ *
+ * ⚠️ 为什么必须有这一步：
+ *    上面 LENSES 里的焦距写死是安全的（Matrice 4 各机型焦距确实相同，都是公开常数），
+ *    但**像素数不是**：M4TD 广角是 1/1.3" 4800 万（8064×6048），
+ *    M4D/M4E/M4T 是 4/3" 2000 万（5280×3956）。旧代码拿到机型不看，
+ *    一律按 8064 算 GSD —— M4E 会被算成 1.86cm（真值 2.84cm，偏差 −34.5%）。
+ *    所以像素必须跟着机型走，焦距可以共用。
+ *
+ * 优先级（不要打乱）：
+ *     真实航线反演值(overrides)  >  机型注册表的官方规格  >  通用理论表
+ *  真实航线是量出来的，比任何标称值都可信；这也是既有设计的选择，保留。
+ * ========================================================================== */
+import { lensProfileFor as _lensProfileFor, lensOf } from './aircraftLens.js';
+
+/**
+ * 解析某机型在给定镜头位上的完整规格
+ * @param {{key?:string,name?:string}} [model] 机型；不传或查不到时回落到通用表
+ * @param {string[]} lensKeys
+ * @returns {{profile:object|null, matchedBy:string, warnings:string[], specs:object[]}}
+ */
+export function resolveLensSpecs(model, lensKeys = ['wide']) {
+  const keys = lensKeys.length ? lensKeys : ['wide'];
+  if (!model || (!model.key && !model.name)) {
+    // 没有机型信息：严格沿用旧的通用表行为（连像素都不猜），结局与重构前完全一致
+    return {
+      profile: null,
+      matchedBy: 'none',
+      warnings: [],
+      specs: keys.map((key) => ({ ...lensByKey(key), source: 'generic', pixelsUnknown: true })),
+    };
+  }
+  const { profile, matchedBy, warnings } = _lensProfileFor({ key: model.key, name: model.name });
+  const specs = keys.map((key) => {
+    const generic = lensByKey(key);
+    const spec = lensOf(profile, key);
+    const fromRegistry = !!spec;
+    const imageW = fromRegistry ? spec.imageW : profile.sensor?.imageW;
+    const imageH = fromRegistry ? spec.imageH : profile.sensor?.imageH;
+    return {
+      key,
+      name: spec?.name || generic.name,
+      focalEq: fromRegistry ? spec.focalEq : generic.focalEq,
+      imageW,
+      imageH,
+      payloadLensIndex: spec?.payloadLensIndex || generic.payloadLensIndex,
+      thermal: !!(spec?.thermal ?? generic.thermal),
+      source: fromRegistry ? 'registry' : 'generic',
+      pixelsUnknown: !Number.isFinite(imageW) || !Number.isFinite(imageH),
+      assumed: !!profile.fallback, // 未知机型回落值，实测前不可用于正式作业
+    };
+  });
+  return { profile, matchedBy, warnings, specs };
+}
+
 /**
  * 取一组镜头的有效间距系数
  * 多镜头同时采集时，间距必须取**最小的那个**（视场最窄的镜头也要满足重叠率），
  * 否则窄视场那一路会漏拍。
  */
-export function effectiveCoef(lensKeys = ['wide'], overrides = {}) {
-  const list = (lensKeys.length ? lensKeys : ['wide']).map(lensByKey);
+export function effectiveCoef(lensKeys = ['wide'], overrides = {}, model = null) {
+  const { specs, profile, matchedBy, warnings } = resolveLensSpecs(model, lensKeys);
   let swathK = Infinity;
   let stepK = Infinity;
   let governing = null;
-  for (const l of list) {
+  let stepGovernor = null;
+  for (const l of specs) {
     const ov = overrides[l.key];
     const k = ov?.swathK ?? swathKOf(l.focalEq);
     const ks = ov?.stepK ?? stepKOf(l.focalEq);
@@ -59,15 +116,26 @@ export function effectiveCoef(lensKeys = ['wide'], overrides = {}) {
       swathK = k;
       governing = l;
     }
+    if (ks < stepK) {
+      stepK = ks;
+      stepGovernor = l;
+    }
     stepK = Math.min(stepK, ks);
   }
   return {
     swathK,
     stepK,
-    governing: governing || list[0],
-    lenses: list,
+    governing: governing || specs[0],
+    /** 沿航向片基的约束镜头（可以是另一颗，与旁向的约束镜头不必是同一颗） */
+    stepGovernor: stepGovernor || specs[0],
+    lenses: specs,
     // 覆盖宽度（航高 1m 时的米数），用于界面提示
     swathRatio: swathK,
+    /** 机型适配的来源，界面上要能说清「这个 GSD 是量出来的还是查出来的」 */
+    lensSource: profile
+      ? { model: profile.names?.[0] || model?.name || '', matchedBy, registry: !profile.fallback, source: profile.source }
+      : { model: '', matchedBy: 'none', registry: false, source: '' },
+    warnings,
   };
 }
 

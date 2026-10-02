@@ -25,6 +25,8 @@ import { buildWaylineFiles } from './wpmlBuilder.js';
 import { packKmz } from './kmzPacker.js';
 import { compareWithReference } from './wpmlInspector.js';
 import { effectiveCoef, lensIndexText, lensByKey } from './lensProfile.js';
+import { OBLIQUE_MODE, checkOblique, lensProfileFor } from './aircraftLens.js';
+import { orthoSwath, effectiveSwath, sideLayout, MIN_ORTHO_SIDE_OVERLAP, DEFAULT_SIDE_TILT_DEG, DEFAULT_ETA } from './obliqueModel.js';
 
 /** 相机最小拍照间隔（DJI Matrice 4 系列实测规格 0.7s） */
 const MIN_SHOOT_INTERVAL = 0.7;
@@ -57,6 +59,106 @@ export function corridorHalfWidth(params = {}) {
   const w = Number(params.corridorWidth);
   if (Number.isFinite(w) && w > 0) return w / 2;
   return 20;
+}
+
+/* ============================================================================
+ * 摆拍接入
+ *
+ * ⚠️ 当前策略：**只做投影，不改航线**。
+ *
+ *    摆拍放宽间距的全部前提是「飞机真的会摆动拍摄」——侧摆影像补上相邻航带之间的空白。
+ *    而 KMZ 里必须写入 `wpml:smartObliqueEnable` 才会摆；本项目还没在真实司空 2 上
+ *    验证过这个字段（缺字段实测会直接 code=200500，见 wpmlBuilder 头部纪要）。
+ *    若现在就按摆拍拉开间距下发一条没开关的航线，飞出来就是「更稀的正射」——必然漏拍。
+ *    所以：**在开关验证之前，投影可以给看，间距一寸不让。**
+ *
+ *    字段落地后，把 resolveOblique 的 `applied` 置 true 即可，其余逻辑不用动。
+ * ========================================================================== */
+
+/** 正射工况判定：只有近似正射时，obliqueModel 的间距公式才成立 */
+const NADIR_TILT_TOLERANCE_DEG = 5;
+
+export function resolveOblique({ aircraft, params, height, focalRef, frameWEff, spacingNadir, tiltDeg, overlapSidePct }) {
+  const mode = String(params.oblique || OBLIQUE_MODE.OFF);
+  if (mode === OBLIQUE_MODE.OFF) {
+    return { mode: OBLIQUE_MODE.OFF, requested: false, applied: false, projection: null, warnings: [] };
+  }
+  if (!Object.values(OBLIQUE_MODE).includes(mode)) {
+    return {
+      mode,
+      requested: true,
+      applied: false,
+      error: `未知的摆拍模式 ${mode}（可用：${Object.values(OBLIQUE_MODE).join(' / ')}）`,
+      projection: null,
+      warnings: [],
+    };
+  }
+
+  const { profile } = lensProfileFor({ key: aircraft.key, name: aircraft.name });
+  const gate = checkOblique(profile, mode);
+  if (!gate.ok) {
+    return { mode, requested: true, applied: false, error: gate.message, projection: null, warnings: [] };
+  }
+
+  // obliqueModel 的间距公式建立在「下视窗口 + 侧摆补充」的正射假设上。
+  // 云台已倾斜时，影像 footprint 本身是梯形而非矩形，不适用该公式，故不给出投影。
+  if (Math.abs(tiltDeg) > NADIR_TILT_TOLERANCE_DEG) {
+    return {
+      mode,
+      requested: true,
+      applied: false,
+      error:
+        `摆拍投影模型建立在正射假设上，当前云台俯仰已倾斜 ${Math.abs(tiltDeg).toFixed(0)}°` +
+        `（超过 ${NADIR_TILT_TOLERANCE_DEG}°），该工况下不给出投影结果，避免误导。`,
+      projection: null,
+      warnings: [],
+    };
+  }
+
+  const swath = orthoSwath({ height, focalEq: focalRef, frameW: frameWEff });
+  const sideTiltDeg = Number(params.sideTiltDeg ?? DEFAULT_SIDE_TILT_DEG);
+  const eta = Number(params.obliqueEta ?? undefined) || undefined;
+  const eff = effectiveSwath({ height, focalEq: focalRef, frameW: frameWEff, sideTiltDeg, eta, oblique: mode });
+  const layout = sideLayout({
+    height,
+    focalEq: focalRef,
+    frameW: frameWEff,
+    overlapSide: overlapSidePct / 100,
+    sideTiltDeg,
+    eta,
+    oblique: mode,
+  });
+
+  const spacingWould = spacingNadir + eff.gain;
+  const nadirOverlapWould = 1 - spacingWould / swath;
+  const safeWould = nadirOverlapWould >= MIN_ORTHO_SIDE_OVERLAP;
+
+  return {
+    mode,
+    requested: true,
+    /** 始终 false：KMZ 侧开关未经真机验证，不允许真的放宽间距（见上方说明） */
+    applied: false,
+    reason: 'KMZ 尚未写入摆拍开关，为避免「拉开了间距却没摆拍」导致漏拍，本次仍按普通正射布设',
+    projection: {
+      swathM: Math.round(swath * 10) / 10,
+      spacingNowM: Math.round(spacingNadir * 10) / 10,
+      spacingWouldM: Math.round(spacingWould * 10) / 10,
+      savingRatio: Math.round((1 - spacingNadir / spacingWould) * 1000) / 1000,
+      nadirOverlapWould: Math.round(nadirOverlapWould * 1000) / 1000,
+      floor: MIN_ORTHO_SIDE_OVERLAP,
+      safe: safeWould,
+      sideTiltDeg,
+      eta: Number(params.obliqueEta ?? DEFAULT_ETA),
+      gainM: Math.round(eff.gain * 10) / 10,
+      assumed: eff.assumed,
+      message: safeWould
+        ? `在当前 ${overlapSidePct.toFixed(0)}% 旁向重叠下启用摆拍，间距可由 ${spacingNadir.toFixed(1)} m 放宽到 ${spacingWould.toFixed(1)} m（` +
+          `航带约省 ${((1 - spacingNadir / spacingWould) * 100).toFixed(0)}%），正射重叠 ${(nadirOverlapWould * 100).toFixed(1)}% 仍在安全线内`
+        : `⚠️ 按 ${overlapSidePct.toFixed(0)}% 旁向重叠启用摆拍会使正射重叠降到 ${(nadirOverlapWould * 100).toFixed(1)}%，` +
+          `低于 ${(MIN_ORTHO_SIDE_OVERLAP * 100).toFixed(0)}% 重建底线；需提高重叠率或减小摆角`,
+    },
+    warnings: [],
+  };
 }
 
 /** 目标机型必须来自机队（闸 1） */
@@ -188,7 +290,8 @@ export async function plan(input) {
   }
 
   const lensKeys = normalizeLens(params);
-  const coef = effectiveCoef(lensKeys, aircraft.lensOverrides || {});
+  // 关键：把机型传给系数解算，让像素数跟着机型走（见 lensProfile.resolveLensSpecs）
+  const coef = effectiveCoef(lensKeys, aircraft.lensOverrides || {}, aircraft);
   const overlapW = Number(params.overlapW);
   const overlapH = Number(params.overlapH);
   const speed = clamp(Number(params.speed), LIMITS.speed.min, LIMITS.speed.max);
@@ -210,13 +313,19 @@ export async function plan(input) {
   const frameWEff = coef.swathK * focalRef;
   const frameHEff = coef.stepK * focalRef;
 
+  // GSD 按**主摄镜头**算，不用 constraints 的那颗：
+  // 多镜头采集（如 wide+ir）时约束间距的是窄视场那路（红外），但交付成果的分辨率
+  // 看的是主摄。若拿约束镜头去算，红外 640px 会把整条航线的 GSD 报成灾难级，语义也是错的。
+  const primaryLens = coef.lenses[0];
+  const imageW = Number.isFinite(primaryLens.imageW) ? primaryLens.imageW : SENSOR.imageW;
+
   // 航高：给了 GSD 就反算航高（H = GSD·f/δ），否则直接用给定航高
   let height = Number(params.height);
   let gsdCm = Number(params.gsdCm);
   if (Number.isFinite(gsdCm) && gsdCm > 0) {
-    height = heightFromGsd({ gsdCm, focalEq: focalRef, frameW: frameWEff, imageW: SENSOR.imageW });
+    height = heightFromGsd({ gsdCm, focalEq: focalRef, frameW: frameWEff, imageW });
   } else {
-    gsdCm = gsdFromHeight({ height, focalEq: focalRef, frameW: frameWEff, imageW: SENSOR.imageW });
+    gsdCm = gsdFromHeight({ height, focalEq: focalRef, frameW: frameWEff, imageW });
   }
   const heightClamped = height !== clamp(height, LIMITS.height.min, LIMITS.height.max);
   height = clamp(height, LIMITS.height.min, LIMITS.height.max);
@@ -232,6 +341,21 @@ export async function plan(input) {
   const psi2 = tiltFrame === 'world' ? psiWorld + 90 : 0;
   const geo1 = passGeometry({ footprint, psiDeg: psi1, overlapForward: overlapH, overlapSide: overlapW });
   const geo2 = passGeometry({ footprint, psiDeg: psi2, overlapForward: overlapH, overlapSide: overlapW });
+
+  // 摆拍：先做机型能力门禁与投影（当前不改间距，理由见 resolveOblique 注释）
+  const oblique = resolveOblique({
+    aircraft,
+    params,
+    height,
+    focalRef,
+    frameWEff,
+    spacingNadir: geo1.spacing,
+    tiltDeg,
+    overlapSidePct: overlapW,
+  });
+  if (oblique.error) {
+    return { ok: false, code: 'OBLIQUE_REJECTED', message: oblique.error };
+  }
 
   const common = {
     spacing: geo1.spacing,
@@ -283,6 +407,31 @@ export async function plan(input) {
   if (heightClamped) {
     warnings.push(`按地面分辨率反算的航高超出允许区间，已钳到 ${height} m —— 实际 GSD 与目标值会有偏差`);
   }
+  // 像素数是机型适配的关键输入，来源不明就必须讲清楚，不能让使用者以为这是精确值
+  if (primaryLens.pixelsUnknown) {
+    warnings.push(
+      `${aircraft.name} 的${primaryLens.name}镜头像素数未查到公开规格，GSD 按 ${imageW}px 估算，请核实后再用于正式作业`
+    );
+  } else if (primaryLens.assumed) {
+    warnings.push(
+      `机型 ${aircraft.name} 不在镜头库中，光学参数按行业常见配置（${imageW}px）假设，` +
+        `GSD 与真实值可能有明显偏差，请先核实该机型官方规格`
+    );
+  }
+  if (oblique.requested && oblique.projection) {
+    if (!oblique.projection.safe) {
+      warnings.push(
+        `摆拍投影不安全：${oblique.projection.message}。` +
+          `当前仍按普通正射布设（间距 ${oblique.projection.spacingNowM} m），不会被放宽。`
+      );
+    } else {
+      warnings.push(
+        `已启用摆拍投影（仅供评估，未改变本次航线）：${oblique.projection.message}。` +
+          `实际放宽需等 KMZ 侧写入摆拍开关并经真机验证。`
+      );
+    }
+  }
+  if (coef.warnings?.length) warnings.push(...coef.warnings);
   if (footprint.clamped) {
     warnings.push('倾角偏大，远端影像已接近地平线，有效覆盖范围做了限幅：实际重叠率会高于设定值，请确认影像可用');
   }
@@ -345,6 +494,21 @@ export async function plan(input) {
       payloadLensIndex: lensIndexText(lensKeys),
       swathK: Math.round(coef.swathK * 1000) / 1000,
       calibratedKeys: Object.keys(aircraft.lensOverrides || {}),
+      // 参数是「查出来」还是「量出来」，必须能对上账：
+      // 反演值来自本队真实航线（可信），spec 来自官方公开规格，assumed 是未知机型的回落假设
+      source: {
+        swathK: Object.keys(aircraft.lensOverrides || {}).includes(coef.governing.key) ? 'calibrated' : 'spec',
+        model: coef.lensSource.model,
+        matchedBy: coef.lensSource.matchedBy,
+        registry: coef.lensSource.registry,
+      },
+      gsdByLens: coef.lenses
+        .filter((l) => Number.isFinite(l.imageW))
+        .map((l) => ({
+          key: l.key,
+          name: l.name,
+          gsdCm: Math.round(gsdFromHeight({ height, focalEq: l.focalEq, frameW: frameWEff, imageW: l.imageW }) * 100) / 100,
+        })),
     },
     /** 基础参数解算结果：任务参数是「果」，这一层才是「因」，界面上要能对上账 */
     geometry: {
@@ -365,6 +529,10 @@ export async function plan(input) {
         clamped: footprint.clamped,
       },
       passes: passSummary(direction, templateType, geo1, geo2),
+      /** 摆拍投影：有权重但当前不改航线，界面要能原样展示给出的一段话 */
+      oblique: oblique.projection
+        ? { mode: oblique.mode, applied: oblique.applied, reason: oblique.reason, ...oblique.projection }
+        : { mode: oblique.mode, applied: false },
     },
     plan: {
       strips: plan.strips,

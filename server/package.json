@@ -17,7 +17,8 @@
     "test:wayline": "node scripts/verify-wayline-kernel.mjs",
     "test:grid": "node scripts/verify-grid-geometry.mjs",
     "test:mail": "node scripts/test-mail.mjs",
-    "test:lens": "node scripts/verify-oblique.mjs"
+    "test:oblique": "node scripts/verify-oblique.mjs",
+    "test:wayline-int": "node scripts/verify-wayline-integration.mjs"
   },
   "dependencies": {
     "ali-oss": "^6.21.0",
