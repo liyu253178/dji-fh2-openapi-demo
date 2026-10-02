@@ -36,6 +36,8 @@ const geo = await import('../src/modules/review/geo.js');
 const review = await import('../src/modules/review/reviewService.js');
 const { syncRepo, assetRepo, ticketRepo, dictRepo, patchRepo, patchImageRepo } =
   await import('../src/db/repositories/index.js');
+// 逾期刷新的节流重置只在 ticketRepo 模块上导出，聚合入口不转发
+const { __resetOverdueThrottle } = await import('../src/db/repositories/ticketRepo.js');
 
 migrate();
 seed({ withSampleRecipients: true });
@@ -224,6 +226,19 @@ ok('按类型统计', byType.length >= 1, JSON.stringify(byType));
 DB.run(`UPDATE ticket SET deadline='2020-01-01' WHERE status='draft'`);
 ok('逾期刷新', ticketRepo.refreshOverdue() >= 1);
 ok('逾期筛选可用', ticketRepo.list({ overdue: true }).total >= 1);
+
+// 读路径接线：不许手动调 refreshOverdue，只走 summary()/list() 就要把逾期刷出来。
+// 这是 P0-4 的核心——之前 refreshOverdue 全仓无调用点，overdue 恒为 0，
+// 台账页「逾期数」与逾期筛选静默失效，而它连错都不报。
+DB.run(`UPDATE ticket SET deadline='2020-01-01', overdue=0 WHERE status='draft'`);
+__resetOverdueThrottle();
+const after = ticketRepo.summary();
+ok('读路径自动刷新逾期（summary）', after.overdue >= 1, `overdue=${after.overdue}`);
+// 反向回收：期限改到未来后不该再算逾期
+DB.run(`UPDATE ticket SET deadline='2099-01-01' WHERE status='draft'`);
+__resetOverdueThrottle();
+const sumBack = ticketRepo.summary();
+ok('期限后延后逾期标记被回收', sumBack.overdue === 0, `overdue=${sumBack.overdue}`);
 
 section('12. 字典联动');
 const il = dictRepo.getIssueType('ILLEGAL_BUILD');

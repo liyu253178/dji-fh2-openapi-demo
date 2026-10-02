@@ -11,6 +11,10 @@ import { all, get, run, insert, patch, tx, scalar } from '../index.js';
 
 const now = () => new Date().toISOString();
 
+/** 逾期刷新节流窗口（读路径上的附属写，避免每个列表请求都扫一遍表） */
+const OVERDUE_REFRESH_MS = 60_000;
+let lastOverdueRefreshAt = 0;
+
 // ===================================================================
 // 工单状态机（一期权威定义）
 // 规则集中在此，接口层的 allowedTransitions 直接由 canTransit 派生，
@@ -427,6 +431,7 @@ export const ticketRepo = {
 
   /** 列表：多条件 + 分页 */
   list({ status, issueType, projectUuid, overdue, beginAt, endAt, keyword, page = 1, pageSize = 20 } = {}) {
+    ticketRepo.ensureOverdueFresh();
     const where = [];
     const params = { limit: pageSize, offset: (page - 1) * pageSize };
     if (status) {
@@ -546,19 +551,53 @@ export const ticketRepo = {
     return all('SELECT * FROM ticket_log WHERE ticket_id = @id ORDER BY created_at ASC, id ASC', { id });
   },
 
-  /** 刷新逾期标记（定时任务每小时调） */
+  /**
+   * 刷新逾期标记：既补标记，也撤销已不成立的标记（期限被后延或已进终态）。
+   *
+   * 返回值沿用「本次新标记为逾期的条数」，保持既有调用方的比较语义。
+   */
   refreshOverdue() {
     const today = new Date().toISOString().slice(0, 10);
-    return run(
+    const marked = run(
       `UPDATE ticket SET overdue = 1, updated_at = @ts
        WHERE deadline IS NOT NULL AND deadline < @today
          AND overdue = 0 AND status NOT IN ('submitted','cancelled')`,
       { today, ts: now() }
     ).changes;
+    // 反向回收：期限被改到未来 / 已终态的工单不应继续算逾期，
+    // 否则逾期数只增不减，会一直虚高。
+    run(
+      `UPDATE ticket SET overdue = 0, updated_at = @ts
+       WHERE overdue = 1
+         AND (deadline IS NULL OR deadline >= @today OR status IN ('submitted','cancelled'))`,
+      { today, ts: now() }
+    );
+    return marked;
+  },
+
+  /**
+   * 读前确保逾期状态新鲜。
+   *
+   * 原来 refreshOverdue 只有定义、无任何调用点，导致 overdue 恒为 0，
+   * 台账页「逾期数」与逾期筛选静默失效。这里在每次读台账前刷新，
+   * 60 秒节流一次，避免高频列表请求反复写库。
+   */
+  ensureOverdueFresh() {
+    const nowMs = Date.now();
+    if (nowMs - lastOverdueRefreshAt < OVERDUE_REFRESH_MS) return 0;
+    lastOverdueRefreshAt = nowMs;
+    try {
+      return ticketRepo.refreshOverdue();
+    } catch (e) {
+      // 逾期刷新是读路径上的附属动作，失败不应让台账打不开
+      lastOverdueRefreshAt = 0;
+      return 0;
+    }
   },
 
   /** 统计汇总（台账页） */
   summary({ beginAt, endAt, issueType } = {}) {
+    ticketRepo.ensureOverdueFresh();
     const where = [];
     const params = {};
     if (beginAt) {
@@ -588,3 +627,8 @@ export const ticketRepo = {
     };
   },
 };
+
+/** 仅供测试：重置逾期刷新的节流窗口，让同一进程内的连续用例都能跑到真实逻辑 */
+export function __resetOverdueThrottle() {
+  lastOverdueRefreshAt = 0;
+}

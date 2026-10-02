@@ -30,11 +30,27 @@ import notifyRoutes from './routes/notify.js';
 import dictRoutes from './routes/dict.js';
 import { recipientRoutes } from './routes/dict.js';
 import { startWorker as startMailWorker } from './modules/notify/mailer.js';
+import { hardenRouter, errorHandler, apiNotFound, installProcessGuards } from './http.js';
+import { requireToken, authEnabled } from './security.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
 
-app.use(cors());
+// 进程级兜底：任何漏网的 rejected promise 都不再让 BFF 退出
+installProcessGuards();
+
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+// 未显式配置时保持开发期同原来的宽松行为（同源部署下单端口托管不需要 CORS）
+app.use(
+  cors(
+    ALLOWED_ORIGINS.length
+      ? { origin: (origin, cb) => cb(null, ALLOWED_ORIGINS.includes(origin)) }
+      : {}
+  )
+);
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -59,23 +75,33 @@ if (session.token) log.ok('BOOT', `已载入 OpenAPI TK（${store.listTokens().f
 else log.warn('BOOT', '尚未配置 OpenAPI TK，请在「司空管理」中添加');
 if (session.projectUuid) log.ok('BOOT', `已恢复项目选择: ${session.projectUuid}`);
 
-app.use('/api/session', sessionRoutes);
-app.use('/api/device', deviceRoutes);
-app.use('/api/live', liveRoutes);
-app.use('/api/wayline', waylineRoutes);
-app.use('/api/task', taskRoutes);
-app.use('/api/takeoff', takeoffRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/ops', opsRoutes);
-app.use('/api/model', modelRoutes);
-app.use('/api/asset', assetRoutes);
-app.use('/api/review', reviewRoutes);
-app.use('/api/tickets', ticketRoutes);
-app.use('/api/notify', notifyRoutes);
-app.use('/api/dict', dictRoutes);
+if (authEnabled()) log.ok('SEC', '已启用接口访问令牌校验（API_TOKEN）');
+else log.warn('SEC', '未设置 API_TOKEN，接口无鉴权——仅可在可信网络内使用，或设置该环境变量后再对外暴露');
+
+/**
+ * hardenRouter 会把路由下所有 async handler 包上异常捕获（Express 4 不接管
+ * rejected promise，否则任一设备网络抖动都会让进程退出）。新挂的路由务必经过它。
+ *
+ * requireToken 在设置了 API_TOKEN 后生效，本地未设置时自动放行。
+ */
+app.use('/api', requireToken);
+app.use('/api/session', hardenRouter(sessionRoutes));
+app.use('/api/device', hardenRouter(deviceRoutes));
+app.use('/api/live', hardenRouter(liveRoutes));
+app.use('/api/wayline', hardenRouter(waylineRoutes));
+app.use('/api/task', hardenRouter(taskRoutes));
+app.use('/api/takeoff', hardenRouter(takeoffRoutes));
+app.use('/api/admin', hardenRouter(adminRoutes));
+app.use('/api/ops', hardenRouter(opsRoutes));
+app.use('/api/model', hardenRouter(modelRoutes));
+app.use('/api/asset', hardenRouter(assetRoutes));
+app.use('/api/review', hardenRouter(reviewRoutes));
+app.use('/api/tickets', hardenRouter(ticketRoutes));
+app.use('/api/notify', hardenRouter(notifyRoutes));
+app.use('/api/dict', hardenRouter(dictRoutes));
 // 派发对象挂在 /api/recipients 下，dict 路由内的路径已是 /recipients，
 // 直接挂 dictRoutes 会变成 /api/recipients/recipients，故单独导出一份根路径路由
-app.use('/api/recipients', recipientRoutes);
+app.use('/api/recipients', hardenRouter(recipientRoutes));
 
 /** 领域事件 SSE（设备上下线等） */
 app.get('/api/events/stream', (req, res) => {
@@ -109,6 +135,11 @@ app.get('/api/ping', (req, res) => res.json({ ok: true, ts: Date.now() }));
 app.get('/api/admin/db-status', (req, res) => {
   res.json({ code: 0, message: '', data: { health: dbHealth(), counts: tableCounts() } });
 });
+
+// 未匹配的 /api 请求明确 404，避免落到 SPA 回退拿到一份 HTML 后被前端当成解析错误。
+// 必须挂在**所有** api 路由之后（SSE / ping / db-status 都在上面才定义），
+// 但要在静态托管之前。
+app.use('/api', apiNotFound);
 
 /** 优雅退出：checkpoint WAL，确保数据落盘 */
 function shutdown(signal) {
@@ -157,6 +188,9 @@ if (fs.existsSync(path.join(DIST, 'index.html'))) {
 } else {
   log.warn('BOOT', '未找到 web/dist，请先执行 npm run build（开发模式可用 5173 端口）');
 }
+
+// 统一错误出口：必须挂在最后，才能接住前面所有路由/静态资源的异常
+app.use(errorHandler);
 
 app.listen(PORT, () => {
   log.ok('BOOT', `司空 2 BFF 服务已启动: http://127.0.0.1:${PORT}`);

@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { request, session, currentBase, mask } from '../djiClient.js';
 import { getLogs, clearLogs, log } from '../logger.js';
 import { mockState, setMock } from '../mock.js';
+import { checkUpstream, checkProxyPath } from '../security.js';
 
 const router = Router();
 
@@ -19,10 +20,33 @@ router.delete('/logs', (req, res) => {
   res.json({ ok: true });
 });
 
-/** 通用代理：任意 method + path + body 直连司空 2，用于 API 测试 */
+/**
+ * 通用代理：任意 method + path + body 直连司空 2，用于 API 测试
+ *
+ * 安全约束（P0-3）：这是一个「把服务器保存的真实 TK 发给某个地址」的出口，
+ * 默认开放等于人人可用的 SSRF 打点。这里卡三道：
+ *   1. 路径必须以 /openapi/ 开头，不允许 ..、换行、空格等拼接素材
+ *   2. 上行地址必须能通过内网/元数据地址检查
+ *   3. 命中拒绝时记录日志，便于事后排查
+ */
 router.post('/proxy', async (req, res) => {
   const { method = 'GET', path = '', query, body, useProject = true, timeout } = req.body || {};
   if (!path) return res.json({ ok: false, message: '请填写接口路径，例如 /openapi/v0.1/project' });
+
+  const pathCheck = checkProxyPath(path);
+  if (!pathCheck.ok) {
+    log.warn('SEC', `调试代理路径被拒: ${pathCheck.reason} path=${path}`);
+    return res.status(400).json({ ok: false, message: `不允许的路径：${pathCheck.reason}` });
+  }
+
+  const base = currentBase();
+  // 司空 2 私有云部署在客户内网时，设置 PROXY_ALLOW_PRIVATE=1 才放行内网地址
+  const up = checkUpstream(base, { allowPrivate: process.env.PROXY_ALLOW_PRIVATE === '1' });
+  if (!up.ok) {
+    log.warn('SEC', `调试代理上行地址被拒: ${up.reason} base=${base || '(空)'}`);
+    return res.status(400).json({ ok: false, message: `当前接入点不可用：${up.reason}` });
+  }
+
   const started = Date.now();
   const r = await request({
     method: method.toUpperCase(),

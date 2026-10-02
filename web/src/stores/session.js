@@ -3,7 +3,9 @@
  * 切换 TK 或项目后，设备与物模型自动失效重载
  */
 import { defineStore } from 'pinia';
-import { sessionApi } from '../api/dji';
+// adminApi 用于「演示数据」开关；此前只导入 sessionApi，toggleMock 会抛
+// ReferenceError 且被 rejected promise 吞掉，界面无任何反馈
+import { sessionApi, adminApi } from '../api/dji';
 
 export const useSessionStore = defineStore('session', {
   state: () => ({

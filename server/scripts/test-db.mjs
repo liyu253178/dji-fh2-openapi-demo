@@ -63,7 +63,12 @@ ok('基线迁移执行', mig.baseline > 0, `baseline=${mig.baseline}`);
 // 版本数随 migrations/ 目录增长，只断言「基线已记录」且不重复
 ok('基线版本已记录', mig.versions >= 1, `versions=${mig.versions}`);
 const info = schemaInfo();
-ok('表数量 = 14', info.tableCount === 14, `实际 ${info.tableCount}`);
+// 不写死具体数量：每加一张业务表都要回头改这个常量，属于典型的「测试跟着实现抄」。
+// 改为断言「核心表齐了」+「不会莫名丢表」。
+const CORE_TABLES = ['project', 'device', 'flight_task', 'asset_image', 'patch', 'issue_type', 'recipient', 'ticket', 'ticket_log'];
+const missing = CORE_TABLES.filter((t) => !info.tables.includes(t));
+ok('核心业务表齐全', missing.length === 0, `缺失 ${missing.join(',') || '无'}`);
+ok('表数量 >= 14', info.tableCount >= 14, `实际 ${info.tableCount}`);
 ok('索引数量 >= 26', info.indexCount >= 26, `实际 ${info.indexCount}`);
 
 section('2. 迁移幂等性');
